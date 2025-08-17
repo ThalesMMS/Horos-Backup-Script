@@ -351,20 +351,12 @@ QUERY_STUDIES_BY_STUDYDATE = f"""
         COALESCE(st.ZDATEOFBIRTH,'') AS dob,
         COALESCE(st.ZNAME,'')     AS patientName
       FROM ZSTUDY st
-      WHERE
-        (
-          INSTR(UPPER(COALESCE(st.ZMODALITY,'')), 'CT') > 0
-          OR INSTR(UPPER(COALESCE(st.ZMODALITY,'')), 'MR') > 0
-          /* se sua base tiver a coluna ModalitiesInStudy no estudo, esta linha ajuda MUITO */
-          OR INSTR(UPPER(COALESCE(st.ZMODALITIESINSTUDY,'')), 'CT') > 0
-          OR INSTR(UPPER(COALESCE(st.ZMODALITIESINSTUDY,'')), 'MR') > 0
-        )
-        OR EXISTS (
-          SELECT 1
-          FROM ZSERIES s
-          WHERE s.ZSTUDY = st.Z_PK
-            AND TRIM(UPPER(COALESCE(s.ZMODALITY,''))) IN ({",".join("?"*len(MODS))})
-        )
+      WHERE EXISTS (
+        SELECT 1
+        FROM ZSERIES s
+        WHERE s.ZSTUDY = st.Z_PK
+          AND TRIM(UPPER(COALESCE(s.ZMODALITY,''))) IN ({",".join("?"*len(MODS))})
+      )
     )
     SELECT cs.*
     FROM CandidateStudies cs
@@ -384,20 +376,12 @@ QUERY_STUDIES_BY_DATEADDED = f"""
         COALESCE(st.ZDATEOFBIRTH,'') AS dob,
         COALESCE(st.ZNAME,'')        AS patientName
       FROM ZSTUDY st
-      WHERE
-         (
-          INSTR(UPPER(COALESCE(st.ZMODALITY,'')), 'CT') > 0
-          OR INSTR(UPPER(COALESCE(st.ZMODALITY,'')), 'MR') > 0
-          /* se sua base tiver a coluna ModalitiesInStudy no estudo, esta linha ajuda MUITO */
-          OR INSTR(UPPER(COALESCE(st.ZMODALITIESINSTUDY,'')), 'CT') > 0
-          OR INSTR(UPPER(COALESCE(st.ZMODALITIESINSTUDY,'')), 'MR') > 0
-        )
-        OR EXISTS (
-          SELECT 1
-          FROM ZSERIES s
-          WHERE s.ZSTUDY = st.Z_PK
-            AND TRIM(UPPER(COALESCE(s.ZMODALITY,''))) IN ({",".join("?"*len(MODS))})
-        )
+      WHERE EXISTS (
+        SELECT 1
+        FROM ZSERIES s
+        WHERE s.ZSTUDY = st.Z_PK
+          AND TRIM(UPPER(COALESCE(s.ZMODALITY,''))) IN ({",".join("?"*len(MODS))})
+      )
     )
     SELECT cs.*
     FROM CandidateStudies cs
@@ -571,60 +555,39 @@ def run_once():
 
         # 5) Banco de estado e attach (somente leitura nesta conexão)
         state_conn = state_connect()
-        cur.execute("ATTACH DATABASE ? AS state", (f"file:{STATE_DB}?mode=ro",))
+        cur.execute("ATTACH DATABASE ? AS state", (str(STATE_DB),))
 
-        # --- Diagnóstico de candidatos/exportados ---
+        # --- Diagnóstico de candidatos/exportados (100% series-level) ---
         try:
-            # snapshot de candidatos por modalidade (study-level OU series-level)
-            COUNT_CANDIDATES = """
-                SELECT COUNT(*) AS n
-                FROM ZSTUDY st
-                WHERE
-                (INSTR(UPPER(COALESCE(st.ZMODALITY,'')), 'CT') > 0
-                OR INSTR(UPPER(COALESCE(st.ZMODALITY,'')), 'MR') > 0
-                OR INSTR(UPPER(COALESCE(st.ZMODALITIESINSTUDY,'')), 'CT') > 0
-                OR INSTR(UPPER(COALESCE(st.ZMODALITIESINSTUDY,'')), 'MR') > 0)
-                OR EXISTS (
-                    SELECT 1
-                    FROM ZSERIES s
-                    WHERE s.ZSTUDY = st.Z_PK
-                    AND TRIM(UPPER(COALESCE(s.ZMODALITY,''))) IN ('CT','MR')
-                );
-            """
-            cur.execute(COUNT_CANDIDATES)
-            total_candidates = cur.fetchone()[0]
-            # quantos já exportados (no estado)
-            cur.execute("SELECT COUNT(*) FROM state.Exported")
-            already_exported = cur.fetchone()[0]
-            
-            # breakdown auxiliar para depurar diferenças
+            # total de estudos que possuem ao menos uma série CT ou MR
             cur.execute("""
-                SELECT 'series_CT', COUNT(DISTINCT s.ZSTUDY)
+                SELECT COUNT(DISTINCT s.ZSTUDY)
+                FROM ZSERIES s
+                WHERE TRIM(UPPER(COALESCE(s.ZMODALITY,''))) IN ('CT','MR');
+            """)
+            total_candidates = cur.fetchone()[0]
+
+            # quantos já exportados no estado
+            cur.execute("SELECT COUNT(*) FROM state.Exported;")
+            already_exported = cur.fetchone()[0]
+
+            # breakdown auxiliar
+            cur.execute("""
+                SELECT COUNT(DISTINCT s.ZSTUDY)
                 FROM ZSERIES s
                 WHERE TRIM(UPPER(COALESCE(s.ZMODALITY,'')))='CT';
             """)
-            series_ct = cur.fetchone()[1] if cur.fetchone() else 0
+            series_ct = cur.fetchone()[0]
 
             cur.execute("""
-                SELECT 'series_MR', COUNT(DISTINCT s.ZSTUDY)
+                SELECT COUNT(DISTINCT s.ZSTUDY)
                 FROM ZSERIES s
                 WHERE TRIM(UPPER(COALESCE(s.ZMODALITY,'')))='MR';
             """)
-            series_mr = cur.fetchone()[1] if cur.fetchone() else 0
+            series_mr = cur.fetchone()[0]
 
-            cur.execute("""
-                SELECT 'study_contains_CTMR', COUNT(*)
-                FROM ZSTUDY st
-                WHERE INSTR(UPPER(COALESCE(st.ZMODALITY,'')), 'CT') > 0
-                OR INSTR(UPPER(COALESCE(st.ZMODALITY,'')), 'MR') > 0
-                OR INSTR(UPPER(COALESCE(st.ZMODALITIESINSTUDY,'')), 'CT') > 0
-                OR INSTR(UPPER(COALESCE(st.ZMODALITIESINSTUDY,'')), 'MR') > 0;
-            """)
-            study_contains = cur.fetchone()[1] if cur.fetchone() else 0
-
-            log.info("Snapshot detalhado: series_CT(estudos únicos)=%s; series_MR=%s; study_contains(CT|MR)=%s",
-                    series_ct, series_mr, study_contains)
-
+            log.info("Snapshot (series-level): CT(estudos)=%s; MR(estudos)=%s; CT∪MR(estudos únicos)=%s",
+                     series_ct, series_mr, total_candidates)
             log.info("Snapshot: candidatos(CT/MR)=%d; já exportados=%d; pendentes ~%d",
                      total_candidates, already_exported, max(0, total_candidates - already_exported))
         except Exception:
