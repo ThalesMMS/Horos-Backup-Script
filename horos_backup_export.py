@@ -17,6 +17,7 @@ SENTINEL          = PACS_ROOT / ".pacs_sentinel"
 HOROS_DATA_DIR    = PACS_ROOT / "Database" / "Horos Data"
 HOROS_DB_ORIG     = HOROS_DATA_DIR / "Database.sql"
 INCOMING_DIR      = HOROS_DATA_DIR / "INCOMING.noindex"
+DATABASE_DIR      = HOROS_DATA_DIR / "DATABASE.noindex"
 
 # Limiar de sobrecarga: contar arquivos em INCOMING.noindex (early-stop > 25k)
 INCOMING_MAX_FILES = 25_000
@@ -147,9 +148,10 @@ def reset_incomplete_latest_month():
 
 def mark_month_done(month_dir: Path):
     try:
+        month_dir.mkdir(parents=True, exist_ok=True)
         (month_dir / ".month_done").touch()
     except Exception as e:
-        log.warning(f"Falha ao marcar .month_done em {month_dir}: {e}")
+        log.warning("Falha ao marcar .month_done em %s: %s", month_dir, e)
 
 from typing import List
 def zip_study_atomic(input_files: List[Path], out_zip: Path):
@@ -177,6 +179,34 @@ def verify_zip(out_zip: Path) -> bool:
     except Exception as e:
         log.error(f"Falha ao abrir/testar ZIP {out_zip}: {e}")
         return False
+
+def resolve_image_path(zpathstring, zpathnumber, zstored_in_dbfolder):
+    """
+    Monta o caminho físico do arquivo DICOM a partir dos campos ZIMAGE.
+    Regra:
+      - Se ZSTOREDINDATABASEFOLDER for verdadeiro (1), então o arquivo está em:
+            DATABASE.noindex/<ZPATHNUMBER>/<ZPATHSTRING>
+      - Caso contrário, ZPATHSTRING já é um caminho absoluto no disco.
+    """
+    try:
+        in_db = int(zstored_in_dbfolder) == 1
+    except Exception:
+        in_db = False
+
+    if in_db:
+        # Subpasta numérica (ex.: 10000, 20000, 30000, …)
+        sub = str(zpathnumber if zpathnumber is not None else "").strip()
+        if not sub:
+            # fallback: alguns bancos antigos podem não preencher ZPATHNUMBER
+            # nesse caso, ainda tentamos só com ZPATHSTRING
+            return (DATABASE_DIR / zpathstring).resolve()
+        return (DATABASE_DIR / sub / zpathstring).resolve()
+    else:
+        p = Path(zpathstring)
+        # Se for relativo por algum motivo estranho, resolvemos contra a pasta do banco:
+        if not p.is_absolute():
+            p = (HOROS_DATA_DIR / zpathstring)
+        return p.resolve()
 
 # ---------- Estado (estudos já exportados) ----------
 
@@ -280,7 +310,10 @@ QUERY_STUDIES_BY_DATEADDED = f"""
 """
 
 QUERY_IMAGE_PATHS_BY_STUDY_PK = """
-    SELECT DISTINCT i.ZPATHSTRING
+    SELECT DISTINCT
+        i.ZPATHSTRING,
+        i.ZPATHNUMBER,
+        i.ZSTOREDINDATABASEFOLDER
     FROM ZSERIES s
     JOIN ZIMAGE  i ON i.ZSERIES = s.Z_PK
     WHERE s.ZSTUDY = ?
@@ -467,16 +500,21 @@ def run_once():
             # Pega caminhos de imagens para o estudo (por Z_PK)
             cur2 = conn.cursor()
             cur2.execute(QUERY_IMAGE_PATHS_BY_STUDY_PK, (study_pk,))
-            raw_paths = [r[0] for r in cur2.fetchall() if r[0]]
+            rows_img = cur2.fetchall()
 
             # Constrói Paths absolutos
             files = []
-            for rp in raw_paths:
-                p = Path(rp)
-                if not p.is_absolute():
-                    p = HOROS_DATA_DIR / rp
-                if p.is_file():
-                    files.append(p)
+            for r in rows_img:
+                zpathstring = r["ZPATHSTRING"]
+                zpathnumber = r["ZPATHNUMBER"]
+                zstored_in  = r["ZSTOREDINDATABASEFOLDER"]
+                try:
+                    p = resolve_image_path(zpathstring, zpathnumber, zstored_in)
+                    if p.is_file():
+                        files.append(p)
+                except Exception:
+                    # ignora entradas ruins
+                    pass
 
             if not files:
                 log.warning(f"Estudo {study_uid}: nenhum arquivo encontrado. Marcando como NO_FILES.")
