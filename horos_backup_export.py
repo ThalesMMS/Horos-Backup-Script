@@ -4,9 +4,11 @@
 import os, re, sqlite3, time, shutil, zipfile, tempfile, fcntl, sys, csv, logging
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timedelta
 
 # ====================== CONFIG ======================
+
+APPLE_EPOCH = datetime(2001, 1, 1) 
 
 PACS_ROOT         = Path("/Volumes/PACS")
 
@@ -100,20 +102,48 @@ def sanitize_name(s: str) -> str:
 
 def parse_timestamp_to_parts(ts):
     """
-    Tenta extrair YYYY, MM, DD de strings tipo '2023-07-19 12:34:56 +0000' ou '20230719'.
-    Retorna (YYYY, MM, DD) ou (None, None, None).
+    Converte vários formatos para (YYYY, MM, DD):
+      - CoreData TIMESTAMP (float/str): segundos desde 2001-01-01
+      - 'YYYYMMDD' ou 'YYYY-MM-DD'
+      - strings livres que contenham padrão Y-M-D
+    Retorna (y, m, d) como strings zero-padded, ou (None, None, None).
     """
-    if not ts:
+    if ts is None:
         return (None, None, None)
-    ts = str(ts)
-    # Procurar padrão YYYY-MM-DD ou YYYYMMDD
-    m = re.search(r'(\d{4})[-/]?(\d{2})[-/]?(\d{2})?', ts)
-    if not m:
+
+    s = str(ts).strip()
+    if not s:
         return (None, None, None)
-    y = m.group(1)
-    mo = m.group(2)
-    d = m.group(3) if m.lastindex and m.lastindex >= 3 else None
-    return (y, mo, d)
+
+    # 1) Apple/CoreData timestamp (float/int em segundos desde 2001-01-01)
+    #    Exemplos no banco costumam ser "454.xxx..." etc.
+    try:
+        # aceita "454.1614..." ou "4541614" etc.
+        secs = float(s)
+        # heurística: valores pequenos/negativos não fazem sentido como dias correntes → ainda assim convertemos
+        dt = APPLE_EPOCH + timedelta(seconds=secs)
+        y = f"{dt.year:04d}"
+        m = f"{dt.month:02d}"
+        d = f"{dt.day:02d}"
+        return (y, m, d)
+    except ValueError:
+        pass
+
+    # 2) YYYYMMDD estrito
+    if len(s) == 8 and s.isdigit():
+        return (s[0:4], s[4:6], s[6:8])
+
+    # 3) YYYY-MM-DD (ou variações com /)
+    m = re.search(r'(\d{4})[-/](\d{2})[-/](\d{2})', s)
+    if m:
+        return (m.group(1), m.group(2), m.group(3))
+
+    # 4) fallback: tenta pegar YYYY e MM ao menos
+    m2 = re.search(r'(\d{4})[-/](\d{2})', s)
+    if m2:
+        return (m2.group(1), m2.group(2), "01")
+
+    return (None, None, None)
 
 def fmt_date_for_name(ts, fallback="UNKNOWN"):
     y, mo, d = parse_timestamp_to_parts(ts)
@@ -182,31 +212,35 @@ def verify_zip(out_zip: Path) -> bool:
 
 def resolve_image_path(zpathstring, zpathnumber, zstored_in_dbfolder):
     """
-    Monta o caminho físico do arquivo DICOM a partir dos campos ZIMAGE.
-    Regra:
-      - Se ZSTOREDINDATABASEFOLDER for verdadeiro (1), então o arquivo está em:
-            DATABASE.noindex/<ZPATHNUMBER>/<ZPATHSTRING>
-      - Caso contrário, ZPATHSTRING já é um caminho absoluto no disco.
+    Resolve o caminho físico a partir dos campos de ZIMAGE:
+      - Se ZSTOREDINDATABASEFOLDER == 1:
+          DATABASE.noindex/<ZPATHNUMBER>/<ZPATHSTRING>
+        (ZPATHSTRING costuma incluir subpastas adicionais e o nome do arquivo)
+      - Caso contrário, ZPATHSTRING já é um caminho (absoluto ou relativo)
+    Retorna Path (pode não existir; quem chama decide).
     """
     try:
         in_db = int(zstored_in_dbfolder) == 1
     except Exception:
         in_db = False
 
+    s = str(zpathstring or "").lstrip("/")
+
     if in_db:
-        # Subpasta numérica (ex.: 10000, 20000, 30000, …)
-        sub = str(zpathnumber if zpathnumber is not None else "").strip()
-        if not sub:
-            # fallback: alguns bancos antigos podem não preencher ZPATHNUMBER
-            # nesse caso, ainda tentamos só com ZPATHSTRING
-            return (DATABASE_DIR / zpathstring).resolve()
-        return (DATABASE_DIR / sub / zpathstring).resolve()
-    else:
-        p = Path(zpathstring)
-        # Se for relativo por algum motivo estranho, resolvemos contra a pasta do banco:
-        if not p.is_absolute():
-            p = (HOROS_DATA_DIR / zpathstring)
-        return p.resolve()
+        # pasta numérica de topo (ex.: "10000", "20000", ...)
+        sub = (str(zpathnumber).strip() if zpathnumber is not None else "")
+        if sub:
+            p = (DATABASE_DIR / sub / s)
+        else:
+            # fallback raro: alguns bancos antigos não preenchem ZPATHNUMBER
+            p = (DATABASE_DIR / s)
+        return p
+
+    # Se não "in_db", ZPATHSTRING deve ser caminho já resolvido
+    p = Path(zpathstring or "")
+    if not p.is_absolute():
+        p = HOROS_DATA_DIR / s
+    return p
 
 # ---------- Estado (estudos já exportados) ----------
 
@@ -480,10 +514,7 @@ def run_once():
             state_conn.close()
             return
 
-        from typing import Set
-        touched_months: Set[Path] = set()
-        # ou simplesmente:
-        # touched_months = set()
+        zips_by_month = {}  # month_dir -> count
 
         for row in studies:
             study_pk   = row["studyPK"]
@@ -493,7 +524,6 @@ def run_once():
             patient_nm = row["patientName"]
 
             month_dir  = month_dir_for(study_ts)
-            touched_months.add(month_dir)
 
             out_zip = build_zip_path(month_dir, patient_nm, dob_ts, study_ts, study_uid)
 
@@ -502,24 +532,24 @@ def run_once():
             cur2.execute(QUERY_IMAGE_PATHS_BY_STUDY_PK, (study_pk,))
             rows_img = cur2.fetchall()
 
-            # Constrói Paths absolutos
             files = []
+            debug_checked = []  # guardamos alguns candidatos p/ diagnosticar NO_FILES
             for r in rows_img:
                 zpathstring = r["ZPATHSTRING"]
                 zpathnumber = r["ZPATHNUMBER"]
                 zstored_in  = r["ZSTOREDINDATABASEFOLDER"]
-                try:
-                    p = resolve_image_path(zpathstring, zpathnumber, zstored_in)
-                    if p.is_file():
-                        files.append(p)
-                except Exception:
-                    # ignora entradas ruins
-                    pass
+                p = resolve_image_path(zpathstring, zpathnumber, zstored_in)
+                exists = p.is_file()
+                if exists:
+                    files.append(p)
+                # gravamos só os 5 primeiros candidatos verificados p/ log
+                if len(debug_checked) < 5:
+                    debug_checked.append((str(p), exists))
 
             if not files:
                 log.warning(f"Estudo {study_uid}: nenhum arquivo encontrado. Marcando como NO_FILES.")
                 issues_log("NO_FILES", study_uid, "Nenhum arquivo válido encontrado",
-                           {"study_pk": int(study_pk)})
+                        {"study_pk": int(study_pk), "checked": debug_checked})
                 mark_exported(state_conn, study_uid, "NO_FILES")
                 continue
 
@@ -533,6 +563,7 @@ def run_once():
                     zip_study_atomic(files, out_zip)
                     if verify_zip(out_zip):
                         mark_exported(state_conn, study_uid, out_zip)
+                        zips_by_month[month_dir] = zips_by_month.get(month_dir, 0) + 1
                         ok = True
                     else:
                         # ZIP inconsistente; remove e tenta novamente
@@ -561,9 +592,10 @@ def run_once():
 
             time.sleep(SLEEP_BETWEEN_STUDIES)
 
-        # 7) Marcar meses tocados como concluídos
-        for m in touched_months:
-            mark_month_done(m)
+        # 7) Marcar meses concluídos SOMENTE se houve ao menos 1 ZIP
+        for m, cnt in zips_by_month.items():
+            if cnt > 0:
+                mark_month_done(m)
 
         conn.close()
         state_conn.close()
