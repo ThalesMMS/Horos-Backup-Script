@@ -193,7 +193,7 @@ def state_connect():
     conn.commit()
     return conn
 
-def mark_exported(state_conn, study_uid: str, zip_path: Path | str):
+def mark_exported(state_conn, study_uid: str, zip_path):
     cur = state_conn.cursor()
     cur.execute(
         "INSERT OR REPLACE INTO Exported (studyInstanceUID, when_exported, zip_path) VALUES (?, datetime('now'), ?);",
