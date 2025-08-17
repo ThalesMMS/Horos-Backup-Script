@@ -299,6 +299,38 @@ def copy_horos_db_consistent() -> Path:
 
     return DBCOPY_PATH
 
+def choose_db_path():
+    """
+    Retorna SEMPRE o caminho de um snapshot SQLite (nunca o DB original).
+    - USE_DB_COPY=True  -> cria snapshot novo agora e retorna DBCOPY_PATH
+    - USE_DB_COPY=False -> reutiliza DBCOPY_PATH; se não existir, cria uma vez e retorna
+    """
+    if USE_DB_COPY:
+        dbp = copy_horos_db_consistent()
+        try:
+            st = os.stat(dbp)
+            log.info("Snapshot criado: %s (size=%d mtime=%d)", dbp, st.st_size, int(st.st_mtime))
+        except Exception:
+            log.info("Snapshot criado: %s", dbp)
+        return dbp
+    else:
+        if DBCOPY_PATH.exists():
+            try:
+                st = os.stat(DBCOPY_PATH)
+                log.info("Reutilizando snapshot existente: %s (size=%d mtime=%d)", DBCOPY_PATH, st.st_size, int(st.st_mtime))
+            except Exception:
+                log.info("Reutilizando snapshot existente: %s", DBCOPY_PATH)
+            return DBCOPY_PATH
+        else:
+            log.warning("Snapshot ausente em %s; criando uma cópia agora (one-shot).", DBCOPY_PATH)
+            dbp = copy_horos_db_consistent()
+            try:
+                st = os.stat(dbp)
+                log.info("Snapshot criado: %s (size=%d mtime=%d)", dbp, st.st_size, int(st.st_mtime))
+            except Exception:
+                log.info("Snapshot criado: %s", dbp)
+            return dbp
+
 # ---------- SQL adaptado ao seu schema ----------
 
 # Seleciona estudos CT/MR ainda não exportados.
@@ -492,20 +524,14 @@ def run_once():
         # 2) Retomada: apagar último mês incompleto
         reset_incomplete_latest_month()
 
-        # 3) Escolha de DB: cópia consistente ou original (debug)
+        # 3) Escolha de DB snapshot (NUNCA o DB original)
         try:
-            if USE_DB_COPY:
-                db_path = copy_horos_db_consistent()
-                log.info(f"DB copiado para: {db_path}")
-            else:
-                db_path = HOROS_DB_ORIG
-                log.info(f"USANDO DB ORIGINAL (debug): {db_path}")
-        except Exception as e:
-            log.exception("Falha ao preparar DB (cópia). Fallback para DB original.")
-            db_path = HOROS_DB_ORIG
-            log.info(f"Fallback para DB original: {db_path}")
+            db_path = choose_db_path()
+        except Exception:
+            log.exception("Falha ao preparar snapshot do DB.")
+            raise
 
-        # 4) Abre DB escolhido em modo leitura
+        # 4) Abre DB snapshot em modo leitura
         try:
             conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
             conn.row_factory = sqlite3.Row
@@ -516,12 +542,12 @@ def run_once():
             cur = conn.cursor()
             log.debug("Conexão SQLite ok. sqlite_version=%s", sqlite3.sqlite_version)
         except Exception:
-            log.exception("Erro ao abrir SQLite em modo leitura.")
+            log.exception("Erro ao abrir snapshot SQLite em modo leitura.")
             raise
 
-        # 5) Banco de estado e attach
+        # 5) Banco de estado e attach (somente leitura nesta conexão)
         state_conn = state_connect()
-        cur.execute("ATTACH DATABASE ? AS state", (str(STATE_DB),))
+        cur.execute("ATTACH DATABASE ? AS state", (f"file:{STATE_DB}?mode=ro",))
 
         # 6) Seleção do lote
         if ORDER_BY == "date_added":
@@ -532,9 +558,13 @@ def run_once():
         
         log.info("Estudos selecionados para o lote: %d (ORDER_BY=%s, MODS=%s, BATCH_SIZE=%d)",
          len(studies), ORDER_BY, MODS, BATCH_SIZE)
-        for i, r in enumerate(studies[:3]):
-            log.debug("Study[%d] PK=%s UID=%s ZDATE=%r ZDOB=%r NAME=%r",
-                    i, r["studyPK"], r["studyUID"], r.get("studyDate",""), r.get("dob",""), r.get("patientName",""))
+        for i, r in enumerate(studies[:3]):  # amostra de 3
+            keys = r.keys()
+            zdate = r["studyDate"] if "studyDate" in keys else (r["dateAdded"] if "dateAdded" in keys else "")
+            dob   = r["dob"] if "dob" in keys else ""
+            pname = r["patientName"] if "patientName" in keys else ""
+            log.debug("Study[%d] PK=%s UID=%s DATE=%r DOB=%r NAME=%r",
+                    i, r["studyPK"], r["studyUID"], zdate, dob, pname)
 
         if not studies:
             log.info("Nada a exportar neste ciclo.")
@@ -547,7 +577,8 @@ def run_once():
         for row in studies:
             study_pk   = row["studyPK"]
             study_uid  = row["studyUID"]
-            study_ts   = row["studyDate"] if "studyDate" in row.keys() else ""
+            rk = row.keys()
+            study_ts = row["studyDate"] if "studyDate" in rk else (row["dateAdded"] if "dateAdded" in rk else "")
             dob_ts     = row["dob"]
             patient_nm = row["patientName"]
 
