@@ -97,7 +97,7 @@ def sanitize_name(s: str) -> str:
     s = SANITIZE_RE.sub("_", s)
     return (s[:128] or "UNKNOWN")
 
-def parse_timestamp_to_parts(ts: str | None):
+def parse_timestamp_to_parts(ts):
     """
     Tenta extrair YYYY, MM, DD de strings tipo '2023-07-19 12:34:56 +0000' ou '20230719'.
     Retorna (YYYY, MM, DD) ou (None, None, None).
@@ -129,7 +129,8 @@ def month_dir_for(ts: str | None) -> Path:
         return BACKUP_ROOT / f"{y}_{mo}"
     return BACKUP_ROOT / "UNKNOWN_DATE"
 
-def latest_incomplete_month_folder() -> Path | None:
+from typing import Optional
+def latest_incomplete_month_folder() -> Optional[Path]:
     months = [p for p in BACKUP_ROOT.glob("[0-9][0-9][0-9][0-9]_[0-1][0-9]") if p.is_dir()]
     if not months:
         return None
@@ -150,7 +151,8 @@ def mark_month_done(month_dir: Path):
     except Exception as e:
         log.warning(f"Falha ao marcar .month_done em {month_dir}: {e}")
 
-def zip_study_atomic(input_files: list[Path], out_zip: Path):
+from typing import List
+def zip_study_atomic(input_files: List[Path], out_zip: Path):
     out_zip.parent.mkdir(parents=True, exist_ok=True)
     tmp_dir = tempfile.mkdtemp(prefix=".export_tmp_", dir=str(out_zip.parent))
     tmp_zip = Path(tmp_dir) / (out_zip.name + ".part")
@@ -342,7 +344,8 @@ def count_files_early(root: Path, stop_after: int) -> int:
 
 # ---------- issues.csv ----------
 
-def issues_log(kind: str, study_uid: str, detail: str = "", extra: dict | None = None):
+from typing import Optional, Dict
+def issues_log(kind: str, study_uid: str, detail: str = "", extra: Optional[Dict] = None):
     """
     Escreve uma linha em issues.csv: timestamp, kind, study_uid, detail, extras(json)
     """
@@ -357,7 +360,7 @@ def issues_log(kind: str, study_uid: str, detail: str = "", extra: dict | None =
 
 # ---------- Construção de nome do ZIP ----------
 
-def build_zip_path(month_dir: Path, patient_name: str, dob_ts: str, study_ts: str, study_uid: str) -> Path:
+def build_zip_path(month_dir: Path, patient_name: str, dob_ts, study_ts, study_uid: str) -> Path:
     """
     Gera nome único sob as regras:
     - Base: Patient_DOB_StudyDate_UID.zip
@@ -444,7 +447,10 @@ def run_once():
             state_conn.close()
             return
 
-        touched_months: set[Path] = set()
+        from typing import Set
+        touched_months: Set[Path] = set()
+        # ou simplesmente:
+        # touched_months = set()
 
         for row in studies:
             study_pk   = row["studyPK"]
