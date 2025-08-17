@@ -343,43 +343,67 @@ def choose_db_path():
 #   * st.ZDATEOFBIRTH                    -> data de nascimento
 #   * st.ZNAME                           -> nome do paciente
 QUERY_STUDIES_BY_STUDYDATE = f"""
-    WITH Mods AS (
-        SELECT DISTINCT s.ZSTUDY
-        FROM ZSERIES s
-        WHERE UPPER(COALESCE(s.ZMODALITY,'')) IN ({",".join("?"*len(MODS))})
-    )
-    SELECT
+    WITH CandidateStudies AS (
+      SELECT
         st.Z_PK                   AS studyPK,
         st.ZSTUDYINSTANCEUID      AS studyUID,
         COALESCE(st.ZDATE,'')     AS studyDate,
         COALESCE(st.ZDATEOFBIRTH,'') AS dob,
         COALESCE(st.ZNAME,'')     AS patientName
-    FROM ZSTUDY st
-    JOIN Mods m ON m.ZSTUDY = st.Z_PK
-    LEFT JOIN state.Exported ex ON ex.studyInstanceUID = st.ZSTUDYINSTANCEUID
+      FROM ZSTUDY st
+      WHERE
+        (
+          INSTR(UPPER(COALESCE(st.ZMODALITY,'')), 'CT') > 0
+          OR INSTR(UPPER(COALESCE(st.ZMODALITY,'')), 'MR') > 0
+          /* se sua base tiver a coluna ModalitiesInStudy no estudo, esta linha ajuda MUITO */
+          OR INSTR(UPPER(COALESCE(st.ZMODALITIESINSTUDY,'')), 'CT') > 0
+          OR INSTR(UPPER(COALESCE(st.ZMODALITIESINSTUDY,'')), 'MR') > 0
+        )
+        OR EXISTS (
+          SELECT 1
+          FROM ZSERIES s
+          WHERE s.ZSTUDY = st.Z_PK
+            AND TRIM(UPPER(COALESCE(s.ZMODALITY,''))) IN ({",".join("?"*len(MODS))})
+        )
+    )
+    SELECT cs.*
+    FROM CandidateStudies cs
+    LEFT JOIN state.Exported ex ON ex.studyInstanceUID = cs.studyUID
     WHERE ex.studyInstanceUID IS NULL
-    ORDER BY st.ZDATE ASC, st.ZSTUDYINSTANCEUID ASC
+    ORDER BY cs.studyDate ASC, cs.studyUID ASC
     LIMIT ?;
 """
 
 QUERY_STUDIES_BY_DATEADDED = f"""
-    WITH Mods AS (
-        SELECT DISTINCT s.ZSTUDY
-        FROM ZSERIES s
-        WHERE UPPER(COALESCE(s.ZMODALITY,'')) IN ({",".join("?"*len(MODS))})
-    )
-    SELECT
+    WITH CandidateStudies AS (
+      SELECT
         st.Z_PK                      AS studyPK,
         st.ZSTUDYINSTANCEUID         AS studyUID,
         COALESCE(st.ZDATEADDED,'')   AS dateAdded,
         COALESCE(st.ZDATE,'')        AS studyDate,
         COALESCE(st.ZDATEOFBIRTH,'') AS dob,
         COALESCE(st.ZNAME,'')        AS patientName
-    FROM ZSTUDY st
-    JOIN Mods m ON m.ZSTUDY = st.Z_PK
-    LEFT JOIN state.Exported ex ON ex.studyInstanceUID = st.ZSTUDYINSTANCEUID
+      FROM ZSTUDY st
+      WHERE
+         (
+          INSTR(UPPER(COALESCE(st.ZMODALITY,'')), 'CT') > 0
+          OR INSTR(UPPER(COALESCE(st.ZMODALITY,'')), 'MR') > 0
+          /* se sua base tiver a coluna ModalitiesInStudy no estudo, esta linha ajuda MUITO */
+          OR INSTR(UPPER(COALESCE(st.ZMODALITIESINSTUDY,'')), 'CT') > 0
+          OR INSTR(UPPER(COALESCE(st.ZMODALITIESINSTUDY,'')), 'MR') > 0
+        )
+        OR EXISTS (
+          SELECT 1
+          FROM ZSERIES s
+          WHERE s.ZSTUDY = st.Z_PK
+            AND TRIM(UPPER(COALESCE(s.ZMODALITY,''))) IN ({",".join("?"*len(MODS))})
+        )
+    )
+    SELECT cs.*
+    FROM CandidateStudies cs
+    LEFT JOIN state.Exported ex ON ex.studyInstanceUID = cs.studyUID
     WHERE ex.studyInstanceUID IS NULL
-    ORDER BY st.ZDATEADDED ASC, st.ZSTUDYINSTANCEUID ASC
+    ORDER BY cs.dateAdded ASC, cs.studyUID ASC
     LIMIT ?;
 """
 
@@ -549,6 +573,63 @@ def run_once():
         state_conn = state_connect()
         cur.execute("ATTACH DATABASE ? AS state", (f"file:{STATE_DB}?mode=ro",))
 
+        # --- Diagnóstico de candidatos/exportados ---
+        try:
+            # snapshot de candidatos por modalidade (study-level OU series-level)
+            COUNT_CANDIDATES = """
+                SELECT COUNT(*) AS n
+                FROM ZSTUDY st
+                WHERE
+                (INSTR(UPPER(COALESCE(st.ZMODALITY,'')), 'CT') > 0
+                OR INSTR(UPPER(COALESCE(st.ZMODALITY,'')), 'MR') > 0
+                OR INSTR(UPPER(COALESCE(st.ZMODALITIESINSTUDY,'')), 'CT') > 0
+                OR INSTR(UPPER(COALESCE(st.ZMODALITIESINSTUDY,'')), 'MR') > 0)
+                OR EXISTS (
+                    SELECT 1
+                    FROM ZSERIES s
+                    WHERE s.ZSTUDY = st.Z_PK
+                    AND TRIM(UPPER(COALESCE(s.ZMODALITY,''))) IN ('CT','MR')
+                );
+            """
+            cur.execute(COUNT_CANDIDATES)
+            total_candidates = cur.fetchone()[0]
+            # quantos já exportados (no estado)
+            cur.execute("SELECT COUNT(*) FROM state.Exported")
+            already_exported = cur.fetchone()[0]
+            
+            # breakdown auxiliar para depurar diferenças
+            cur.execute("""
+                SELECT 'series_CT', COUNT(DISTINCT s.ZSTUDY)
+                FROM ZSERIES s
+                WHERE TRIM(UPPER(COALESCE(s.ZMODALITY,'')))='CT';
+            """)
+            series_ct = cur.fetchone()[1] if cur.fetchone() else 0
+
+            cur.execute("""
+                SELECT 'series_MR', COUNT(DISTINCT s.ZSTUDY)
+                FROM ZSERIES s
+                WHERE TRIM(UPPER(COALESCE(s.ZMODALITY,'')))='MR';
+            """)
+            series_mr = cur.fetchone()[1] if cur.fetchone() else 0
+
+            cur.execute("""
+                SELECT 'study_contains_CTMR', COUNT(*)
+                FROM ZSTUDY st
+                WHERE INSTR(UPPER(COALESCE(st.ZMODALITY,'')), 'CT') > 0
+                OR INSTR(UPPER(COALESCE(st.ZMODALITY,'')), 'MR') > 0
+                OR INSTR(UPPER(COALESCE(st.ZMODALITIESINSTUDY,'')), 'CT') > 0
+                OR INSTR(UPPER(COALESCE(st.ZMODALITIESINSTUDY,'')), 'MR') > 0;
+            """)
+            study_contains = cur.fetchone()[1] if cur.fetchone() else 0
+
+            log.info("Snapshot detalhado: series_CT(estudos únicos)=%s; series_MR=%s; study_contains(CT|MR)=%s",
+                    series_ct, series_mr, study_contains)
+
+            log.info("Snapshot: candidatos(CT/MR)=%d; já exportados=%d; pendentes ~%d",
+                     total_candidates, already_exported, max(0, total_candidates - already_exported))
+        except Exception:
+            log.exception("Falha ao calcular snapshot de candidatos/exportados")
+
         # 6) Seleção do lote
         if ORDER_BY == "date_added":
             cur.execute(QUERY_STUDIES_BY_DATEADDED, (*MODS, BATCH_SIZE))
@@ -558,7 +639,7 @@ def run_once():
         
         log.info("Estudos selecionados para o lote: %d (ORDER_BY=%s, MODS=%s, BATCH_SIZE=%d)",
          len(studies), ORDER_BY, MODS, BATCH_SIZE)
-        for i, r in enumerate(studies[:3]):  # amostra de 3
+        for i, r in enumerate(studies[:3]):
             keys = r.keys()
             zdate = r["studyDate"] if "studyDate" in keys else (r["dateAdded"] if "dateAdded" in keys else "")
             dob   = r["dob"] if "dob" in keys else ""
