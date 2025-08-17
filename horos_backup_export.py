@@ -56,6 +56,9 @@ MAX_NAME_NOEXT    = 128
 # CSV de issues
 ISSUES_CSV        = BACKUP_ROOT / "issues.csv"
 
+# DEBUG/OPERACAO: usar cópia consistente do DB (True) ou ler direto o original (False)
+USE_DB_COPY = False   # <- deixe APENAS para agilizar o debug
+
 # ====================================================
 
 SANITIZE_RE = re.compile(r'[^0-9A-Za-z._-]+', re.UNICODE)
@@ -65,16 +68,16 @@ SANITIZE_RE = re.compile(r'[^0-9A-Za-z._-]+', re.UNICODE)
 def setup_logging():
     LOGS_DIR.mkdir(parents=True, exist_ok=True)
     logger = logging.getLogger("horos_backup")
-    logger.setLevel(logging.INFO)
+    logger.setLevel(logging.DEBUG)  # antes era INFO
 
     # Rotating file handler
     fh = RotatingFileHandler(str(LOG_FILE), maxBytes=LOG_MAX_BYTES, backupCount=LOG_BACKUP_COUNT)
-    fh.setLevel(logging.INFO)
+    fh.setLevel(logging.DEBUG)  # antes INFO
     fh.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
 
     # Console (stdout) para visibilidade básica no launchd
     ch = logging.StreamHandler(sys.stdout)
-    ch.setLevel(logging.INFO)
+    ch.setLevel(logging.DEBUG)  # antes INFO
     ch.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
 
     logger.addHandler(fh)
@@ -159,6 +162,11 @@ def month_dir_for(ts) -> Path:
     if y and mo:
         return BACKUP_ROOT / f"{y}_{mo}"
     return BACKUP_ROOT / "UNKNOWN_DATE"
+
+def debug_dump_date(label: str, raw):
+    y, mo, d = parse_timestamp_to_parts(raw)
+    log.debug(f"{label}: raw={raw!r} -> parsed={y}-{mo}-{d}")
+    return y, mo, d
 
 from typing import Optional
 def latest_incomplete_month_folder() -> Optional[Path]:
@@ -484,18 +492,32 @@ def run_once():
         # 2) Retomada: apagar último mês incompleto
         reset_incomplete_latest_month()
 
-        # 3) Cópia consistente do DB
-        db_copy = copy_horos_db_consistent()
-        log.info(f"DB copiado para: {db_copy}")
-
-        # 4) Abre DB copiado em modo leitura
-        conn = sqlite3.connect(f"file:{db_copy}?mode=ro", uri=True)
-        conn.row_factory = sqlite3.Row
+        # 3) Escolha de DB: cópia consistente ou original (debug)
         try:
-            conn.execute("PRAGMA query_only=ON;")
+            if USE_DB_COPY:
+                db_path = copy_horos_db_consistent()
+                log.info(f"DB copiado para: {db_path}")
+            else:
+                db_path = HOROS_DB_ORIG
+                log.info(f"USANDO DB ORIGINAL (debug): {db_path}")
+        except Exception as e:
+            log.exception("Falha ao preparar DB (cópia). Fallback para DB original.")
+            db_path = HOROS_DB_ORIG
+            log.info(f"Fallback para DB original: {db_path}")
+
+        # 4) Abre DB escolhido em modo leitura
+        try:
+            conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+            conn.row_factory = sqlite3.Row
+            try:
+                conn.execute("PRAGMA query_only=ON;")
+            except Exception:
+                pass
+            cur = conn.cursor()
+            log.debug("Conexão SQLite ok. sqlite_version=%s", sqlite3.sqlite_version)
         except Exception:
-            pass
-        cur = conn.cursor()
+            log.exception("Erro ao abrir SQLite em modo leitura.")
+            raise
 
         # 5) Banco de estado e attach
         state_conn = state_connect()
@@ -507,6 +529,12 @@ def run_once():
         else:
             cur.execute(QUERY_STUDIES_BY_STUDYDATE, (*MODS, BATCH_SIZE))
         studies = cur.fetchall()
+        
+        log.info("Estudos selecionados para o lote: %d (ORDER_BY=%s, MODS=%s, BATCH_SIZE=%d)",
+         len(studies), ORDER_BY, MODS, BATCH_SIZE)
+        for i, r in enumerate(studies[:3]):
+            log.debug("Study[%d] PK=%s UID=%s ZDATE=%r ZDOB=%r NAME=%r",
+                    i, r["studyPK"], r["studyUID"], r.get("studyDate",""), r.get("dob",""), r.get("patientName",""))
 
         if not studies:
             log.info("Nada a exportar neste ciclo.")
@@ -523,10 +551,15 @@ def run_once():
             dob_ts     = row["dob"]
             patient_nm = row["patientName"]
 
+            # Debug das datas do estudo
+            debug_dump_date("study_date", study_ts)
+            debug_dump_date("dob", dob_ts)
+
             month_dir  = month_dir_for(study_ts)
-
+            log.debug("month_dir=%s", month_dir)
+            
             out_zip = build_zip_path(month_dir, patient_nm, dob_ts, study_ts, study_uid)
-
+            
             # Pega caminhos de imagens para o estudo (por Z_PK)
             cur2 = conn.cursor()
             cur2.execute(QUERY_IMAGE_PATHS_BY_STUDY_PK, (study_pk,))
@@ -534,23 +567,34 @@ def run_once():
 
             files = []
             debug_checked = []  # guardamos alguns candidatos p/ diagnosticar NO_FILES
+            
             for r in rows_img:
                 zpathstring = r["ZPATHSTRING"]
                 zpathnumber = r["ZPATHNUMBER"]
                 zstored_in  = r["ZSTOREDINDATABASEFOLDER"]
+                
                 p = resolve_image_path(zpathstring, zpathnumber, zstored_in)
                 exists = p.is_file()
+                
                 if exists:
                     files.append(p)
-                # gravamos só os 5 primeiros candidatos verificados p/ log
+                
+                # coletar até 5 candidatos para log/issue
                 if len(debug_checked) < 5:
-                    debug_checked.append((str(p), exists))
+                    try:
+                        in_db_flag = int(zstored_in) == 1
+                    except Exception:
+                        in_db_flag = False
+                    debug_checked.append((f"{p}", exists, f"in_db={in_db_flag}", f"zpathnumber={zpathnumber}"))
+            
+            log.debug("ZIMAGE rows para study_pk=%s: %d; encontrados=%d", study_pk, len(rows_img), len(files))
 
             if not files:
                 log.warning(f"Estudo {study_uid}: nenhum arquivo encontrado. Marcando como NO_FILES.")
                 issues_log("NO_FILES", study_uid, "Nenhum arquivo válido encontrado",
                         {"study_pk": int(study_pk), "checked": debug_checked})
                 mark_exported(state_conn, study_uid, "NO_FILES")
+                log.debug("Caminhos tentados (amostra): %s", debug_checked)
                 continue
 
             # Exporta com tentativa + verificação
@@ -562,6 +606,11 @@ def run_once():
                     log.info(f"Exportando {study_uid} -> {out_zip} (tentativa {attempts})")
                     zip_study_atomic(files, out_zip)
                     if verify_zip(out_zip):
+                        try:
+                            zip_size = out_zip.stat().st_size
+                        except Exception:
+                            zip_size = -1
+                        log.info("OK: %s (arquivos=%d, tamanho=%d bytes)", out_zip.name, len(files), zip_size)
                         mark_exported(state_conn, study_uid, out_zip)
                         zips_by_month[month_dir] = zips_by_month.get(month_dir, 0) + 1
                         ok = True
@@ -575,7 +624,7 @@ def run_once():
                                 out_zip.unlink()
                         time.sleep(1)
                 except Exception as e:
-                    log.error(f"Falha ao exportar {study_uid}: {e}")
+                    log.exception("Falha ao exportar %s", study_uid)
                     # remove eventual .zip parcial e tenta de novo
                     try:
                         if out_zip.exists():
