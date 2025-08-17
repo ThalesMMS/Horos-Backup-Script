@@ -114,7 +114,7 @@ def parse_timestamp_to_parts(ts):
     d = m.group(3) if m.lastindex and m.lastindex >= 3 else None
     return (y, mo, d)
 
-def fmt_date_for_name(ts: str | None, fallback="UNKNOWN"):
+def fmt_date_for_name(ts, fallback="UNKNOWN"):
     y, mo, d = parse_timestamp_to_parts(ts)
     if y and mo and d:
         return f"{y}-{mo}-{d}"
@@ -123,7 +123,7 @@ def fmt_date_for_name(ts: str | None, fallback="UNKNOWN"):
     else:
         return fallback
 
-def month_dir_for(ts: str | None) -> Path:
+def month_dir_for(ts) -> Path:
     y, mo, _ = parse_timestamp_to_parts(ts)
     if y and mo:
         return BACKUP_ROOT / f"{y}_{mo}"
