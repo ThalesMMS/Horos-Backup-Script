@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
+##
 import os, re, sqlite3, time, shutil, zipfile, tempfile, fcntl, sys, csv, logging
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -220,35 +221,58 @@ def verify_zip(out_zip: Path) -> bool:
 
 def resolve_image_path(zpathstring, zpathnumber, zstored_in_dbfolder):
     """
-    Resolve o caminho físico a partir dos campos de ZIMAGE:
+    Resolve o caminho físico a partir dos campos de ZIMAGE.
+
+    Regras:
       - Se ZSTOREDINDATABASEFOLDER == 1:
-          DATABASE.noindex/<ZPATHNUMBER>/<ZPATHSTRING>
-        (ZPATHSTRING costuma incluir subpastas adicionais e o nome do arquivo)
-      - Caso contrário, ZPATHSTRING já é um caminho (absoluto ou relativo)
-    Retorna Path (pode não existir; quem chama decide).
+          • Alguns bancos gravam ZPATHSTRING já começando por "<ZPATHNUMBER>/..."
+          • Outros NÃO. Então testamos as duas montagens:
+            1) DATABASE.noindex/<ZPATHNUMBER>/<ZPATHSTRING>
+            2) DATABASE.noindex/<ZPATHSTRING>
+          • E, se por acaso vier absoluto, testamos direto também.
+      - Caso contrário (fora do DB folder), ZPATHSTRING pode ser:
+            • Absoluto
+            • Relativo à pasta do banco (HOROS_DATA_DIR)
+
+    Retorna:
+      - O primeiro candidato que existir (Path); se nenhum existir, retorna o 1º candidato (para log).
     """
     try:
         in_db = int(zstored_in_dbfolder) == 1
     except Exception:
         in_db = False
 
-    s = str(zpathstring or "").lstrip("/")
+    s_raw = zpathstring or ""
+    s = str(s_raw).lstrip("/")
+    sub = (str(zpathnumber).strip() if zpathnumber is not None else "")
+
+    candidates = []
 
     if in_db:
-        # pasta numérica de topo (ex.: "10000", "20000", ...)
-        sub = (str(zpathnumber).strip() if zpathnumber is not None else "")
+        # 1) DATABASE/<sub>/<s>
         if sub:
-            p = (DATABASE_DIR / sub / s)
+            candidates.append(DATABASE_DIR / sub / s)
+        # 2) DATABASE/<s> (caso s já contenha o sub)
+        candidates.append(DATABASE_DIR / s)
+        # 3) Se s já vier absoluto por algum motivo, tente direto também
+        p_abs = Path(s_raw)
+        if p_abs.is_absolute():
+            candidates.append(p_abs)
+    else:
+        p = Path(s_raw)
+        if p.is_absolute():
+            candidates.append(p)
         else:
-            # fallback raro: alguns bancos antigos não preenchem ZPATHNUMBER
-            p = (DATABASE_DIR / s)
-        return p
+            # relativo: resolva a partir da pasta do banco
+            candidates.append(HOROS_DATA_DIR / s)
 
-    # Se não "in_db", ZPATHSTRING deve ser caminho já resolvido
-    p = Path(zpathstring or "")
-    if not p.is_absolute():
-        p = HOROS_DATA_DIR / s
-    return p
+    for c in candidates:
+        try:
+            if c.is_file():
+                return c
+        except Exception:
+            pass
+    return candidates[0]
 
 # ---------- Estado (estudos já exportados) ----------
 
@@ -510,6 +534,23 @@ def build_zip_path(month_dir: Path, patient_name: str, dob_ts, study_ts, study_u
 
 # ---------- Execução de uma rodada ----------
 
+def dump_fs_layout():
+    try:
+        log.debug("FS layout check:")
+        log.debug("  HOROS_DATA_DIR exists=%s path=%s", HOROS_DATA_DIR.exists(), HOROS_DATA_DIR)
+        log.debug("  DATABASE_DIR   exists=%s path=%s", DATABASE_DIR.exists(), DATABASE_DIR)
+        if DATABASE_DIR.exists():
+            subdirs = []
+            with os.scandir(DATABASE_DIR) as it:
+                for entry in it:
+                    if entry.is_dir() and entry.name.isdigit():
+                        subdirs.append(entry.name)
+                        if len(subdirs) >= 10:
+                            break
+            log.debug("  DATABASE_DIR sample subdirs (numeric): %s", ", ".join(subdirs) if subdirs else "(none)")
+    except Exception:
+        log.exception("dump_fs_layout falhou")
+
 def run_once():
     ensure_dirs()
     ensure_volume_mounted()
@@ -531,6 +572,7 @@ def run_once():
 
         # 2) Retomada: apagar último mês incompleto
         reset_incomplete_latest_month()
+        dump_fs_layout()
 
         # 3) Escolha de DB snapshot (NUNCA o DB original)
         try:
@@ -555,41 +597,39 @@ def run_once():
 
         # 5) Banco de estado e attach (somente leitura nesta conexão)
         state_conn = state_connect()
-        cur.execute("ATTACH DATABASE ? AS state", (str(STATE_DB),))
+        # Anexar o DB de estado em modo somente-leitura (URI)
+        cur.execute("ATTACH DATABASE ? AS state", (f"file:{STATE_DB}?mode=ro",))
 
-        # --- Diagnóstico de candidatos/exportados (100% series-level) ---
+        # --- Diagnóstico de candidatos/exportados (coerente com CT/MR) ---
         try:
-            # total de estudos que possuem ao menos uma série CT ou MR
             cur.execute("""
-                SELECT COUNT(DISTINCT s.ZSTUDY)
-                FROM ZSERIES s
-                WHERE TRIM(UPPER(COALESCE(s.ZMODALITY,''))) IN ('CT','MR');
+                WITH cs AS (
+                    SELECT DISTINCT s.ZSTUDY AS ZSTUDY
+                    FROM ZSERIES s
+                    WHERE TRIM(UPPER(COALESCE(s.ZMODALITY,''))) IN ('CT','MR')
+                )
+                SELECT
+                    (SELECT COUNT(*) FROM cs) AS total_candidates,
+                    (SELECT COUNT(DISTINCT s.ZSTUDY) FROM ZSERIES s WHERE TRIM(UPPER(COALESCE(s.ZMODALITY,'')))='CT') AS series_ct,
+                    (SELECT COUNT(DISTINCT s.ZSTUDY) FROM ZSERIES s WHERE TRIM(UPPER(COALESCE(s.ZMODALITY,'')))='MR') AS series_mr,
+                    (
+                    SELECT COUNT(*)
+                    FROM cs
+                    JOIN ZSTUDY st ON st.Z_PK = cs.ZSTUDY
+                    JOIN state.Exported ex ON ex.studyInstanceUID = st.ZSTUDYINSTANCEUID
+                    ) AS exported_in_candidates
             """)
-            total_candidates = cur.fetchone()[0]
+            row = cur.fetchone()
+            total_candidates = int(row["total_candidates"])
+            series_ct = int(row["series_ct"])
+            series_mr = int(row["series_mr"])
+            exported_in_candidates = int(row["exported_in_candidates"])
+            pending = max(0, total_candidates - exported_in_candidates)
 
-            # quantos já exportados no estado
-            cur.execute("SELECT COUNT(*) FROM state.Exported;")
-            already_exported = cur.fetchone()[0]
-
-            # breakdown auxiliar
-            cur.execute("""
-                SELECT COUNT(DISTINCT s.ZSTUDY)
-                FROM ZSERIES s
-                WHERE TRIM(UPPER(COALESCE(s.ZMODALITY,'')))='CT';
-            """)
-            series_ct = cur.fetchone()[0]
-
-            cur.execute("""
-                SELECT COUNT(DISTINCT s.ZSTUDY)
-                FROM ZSERIES s
-                WHERE TRIM(UPPER(COALESCE(s.ZMODALITY,'')))='MR';
-            """)
-            series_mr = cur.fetchone()[0]
-
-            log.info("Snapshot (series-level): CT(estudos)=%s; MR(estudos)=%s; CT∪MR(estudos únicos)=%s",
-                     series_ct, series_mr, total_candidates)
-            log.info("Snapshot: candidatos(CT/MR)=%d; já exportados=%d; pendentes ~%d",
-                     total_candidates, already_exported, max(0, total_candidates - already_exported))
+            log.info("Snapshot (series-level): CT(estudos)=%d; MR(estudos)=%d; CT∪MR(estudos únicos)=%d",
+                    series_ct, series_mr, total_candidates)
+            log.info("Snapshot: candidatos(CT/MR)=%d; já exportados(dentro dos candidatos)=%d; pendentes ~%d",
+                    total_candidates, exported_in_candidates, pending)
         except Exception:
             log.exception("Falha ao calcular snapshot de candidatos/exportados")
 
@@ -635,6 +675,8 @@ def run_once():
             
             out_zip = build_zip_path(month_dir, patient_nm, dob_ts, study_ts, study_uid)
             
+            log.debug("ZIP destino: %s", out_zip)
+            
             # Pega caminhos de imagens para o estudo (por Z_PK)
             cur2 = conn.cursor()
             cur2.execute(QUERY_IMAGE_PATHS_BY_STUDY_PK, (study_pk,))
@@ -647,20 +689,32 @@ def run_once():
                 zpathstring = r["ZPATHSTRING"]
                 zpathnumber = r["ZPATHNUMBER"]
                 zstored_in  = r["ZSTOREDINDATABASEFOLDER"]
-                
+
                 p = resolve_image_path(zpathstring, zpathnumber, zstored_in)
                 exists = p.is_file()
-                
                 if exists:
                     files.append(p)
-                
-                # coletar até 5 candidatos para log/issue
+
+                # Diagnóstico: registrar candidatos possíveis (até 5 amostras)
+                try:
+                    in_db_flag = int(zstored_in) == 1
+                except Exception:
+                    in_db_flag = False
+
                 if len(debug_checked) < 5:
-                    try:
-                        in_db_flag = int(zstored_in) == 1
-                    except Exception:
-                        in_db_flag = False
-                    debug_checked.append((f"{p}", exists, f"in_db={in_db_flag}", f"zpathnumber={zpathnumber}"))
+                    log.debug("IMG CAND: ZPATHSTRING=%r ZPATHNUMBER=%r ZINDB=%r -> resolved=%s exists=%s",
+                              zpathstring, zpathnumber, zstored_in, p, exists)
+                if len(debug_checked) < 5:
+                    if in_db_flag:
+                        s_local = str(zpathstring or "").lstrip("/")
+                        sub_local = (str(zpathnumber).strip() if zpathnumber is not None else "")
+                        cand1 = (DATABASE_DIR / sub_local / s_local) if sub_local else (DATABASE_DIR / s_local)
+                        cand2 = (DATABASE_DIR / s_local)
+                        debug_checked.append((str(cand1), cand1.is_file()))
+                        if str(cand2) != str(cand1) and len(debug_checked) < 5:
+                            debug_checked.append((str(cand2), cand2.is_file()))
+                    else:
+                        debug_checked.append((str(p), exists))
             
             log.debug("ZIMAGE rows para study_pk=%s: %d; encontrados=%d", study_pk, len(rows_img), len(files))
 
@@ -668,7 +722,6 @@ def run_once():
                 log.warning(f"Estudo {study_uid}: nenhum arquivo encontrado. Marcando como NO_FILES.")
                 issues_log("NO_FILES", study_uid, "Nenhum arquivo válido encontrado",
                         {"study_pk": int(study_pk), "checked": debug_checked})
-                mark_exported(state_conn, study_uid, "NO_FILES")
                 log.debug("Caminhos tentados (amostra): %s", debug_checked)
                 continue
 
