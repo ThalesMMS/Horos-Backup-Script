@@ -57,8 +57,9 @@ MAX_NAME_NOEXT    = 128
 # CSV de issues
 ISSUES_CSV        = BACKUP_ROOT / "issues.csv"
 
-# DEBUG/OPERACAO: usar cópia consistente do DB (True) ou ler direto o original (False)
-USE_DB_COPY = False   # <- deixe APENAS para agilizar o debug
+# DEBUG/OPERACAO: manter sempre True em produção para criar snapshot fresco por rodada.
+# Desative apenas em sessões de debug supervisionadas.
+USE_DB_COPY = True
 
 # ====================================================
 
