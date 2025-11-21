@@ -7,6 +7,7 @@ The project automates bulk backup of CT and MR DICOM studies from the Horos data
 ## Repository layout
 
 - `src/horos_backup_export.py` — main backup script.
+- `src/horos_backup/` — modularised backup logic (config, logging, helpers).
 - `launchd/com.horos.backup.plist` — LaunchAgent definition used for scheduling.
 - `docs/` — auxiliary material (Portuguese guide, helper SQL queries, assistant notes).
 
@@ -74,10 +75,11 @@ The project automates bulk backup of CT and MR DICOM studies from the Horos data
    touch "/Volumes/PACS/.pacs_sentinel"
    ```
 2. **Copy the automation files**
-   ```bash
-   cp src/horos_backup_export.py "/Volumes/PACS/Backup/"
-   cp launchd/com.horos.backup.plist ~/Library/LaunchAgents/
-   ```
+ ```bash
+ cp src/horos_backup_export.py "/Volumes/PACS/Backup/"
+ cp -R src/horos_backup "/Volumes/PACS/Backup/horos_backup"
+  cp launchd/com.horos.backup.plist ~/Library/LaunchAgents/
+  ```
 3. **Grant execute permission to the script**
    ```bash
    chmod +x "/Volumes/PACS/Backup/horos_backup_export.py"
@@ -128,6 +130,14 @@ Useful for smoke tests between scheduled runs.
 ```
 
 Temporarily set `BATCH_SIZE = 3` inside the script if you only want to exercise a few studies.
+
+## Development and tests
+
+The automation is modularised under `src/horos_backup/`. Run the unit tests locally with:
+
+```bash
+pytest
+```
 
 ## Troubleshooting
 
