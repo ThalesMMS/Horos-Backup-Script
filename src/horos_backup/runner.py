@@ -1,3 +1,11 @@
+#
+# runner.py
+# Horos Backup Script
+#
+# Coordinates one full export cycle: validating guardrails, preparing the database snapshot, selecting studies, zipping files, and marking results.
+#
+# Thales Matheus Mendonça Santos - November 2025
+#
 """Run a single backup/export cycle."""
 from __future__ import annotations
 
@@ -31,15 +39,18 @@ from .zip_utils import verify_zip, zip_study_atomic
 
 def run_once(config: BackupConfig = DEFAULT_CONFIG, logger: Optional[logging.Logger] = None):
     log = logger or setup_logging(config)
+    # Ensure the required folder structure and external drive are present.
     ensure_dirs(config)
     ensure_volume_mounted(config)
 
+    # Prevent overlapping runs by acquiring a lock; skip if already running.
     lock_fh = acquire_lock(config.paths.lockfile_path)
     if lock_fh is None:
         log.info("Execução anterior ainda em curso; esta rodada será pulada.")
         return
 
     try:
+        # Avoid hammering Horos during heavy imports by bailing out early.
         incoming_count = count_files_early(config.paths.incoming_dir, config.settings.incoming_max_files)
         log.info(
             "INCOMING.noindex: ~%d arquivos (limiar %d)", incoming_count, config.settings.incoming_max_files
@@ -49,16 +60,19 @@ def run_once(config: BackupConfig = DEFAULT_CONFIG, logger: Optional[logging.Log
             issues_log(config, "INCOMING_OVER_LIMIT", "-", f"count={incoming_count}", {"limit": config.settings.incoming_max_files})
             return
 
+        # Clean up the newest month folder if it was left half-written.
         reset_incomplete_latest_month(config, logger=log)
         dump_fs_layout(config, logger=log)
 
         try:
+            # Create or reuse a consistent SQLite snapshot for read-only querying.
             db_path = choose_db_path(config, logger=log)
         except Exception:
             log.exception("Falha ao preparar snapshot do DB.")
             raise
 
         try:
+            # Open the snapshot in query-only mode to match macOS Horos DB.
             conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
             conn.row_factory = sqlite3.Row
             try:
@@ -73,10 +87,12 @@ def run_once(config: BackupConfig = DEFAULT_CONFIG, logger: Optional[logging.Log
 
         state_conn = None
         try:
+            # State DB records exported studies so we never duplicate work.
             state_conn = state_connect(config)
             cur.execute("ATTACH DATABASE ? AS state", (f"file:{config.paths.state_db}?mode=ro",))
 
             try:
+                # Quick stats: how many studies are eligible and already exported.
                 cur.execute(
                     """
                     WITH cs AS (
@@ -154,6 +170,7 @@ def run_once(config: BackupConfig = DEFAULT_CONFIG, logger: Optional[logging.Log
                 study_pk = row["studyPK"]
                 study_uid = row["studyUID"]
                 rk = row.keys()
+                # Fall back to dateAdded when the configured ordering requires it.
                 study_ts = row["studyDate"] if "studyDate" in rk else (row["dateAdded"] if "dateAdded" in rk else "")
                 dob_ts = row["dob"]
                 patient_nm = row["patientName"]
@@ -168,6 +185,7 @@ def run_once(config: BackupConfig = DEFAULT_CONFIG, logger: Optional[logging.Log
                 log.debug("ZIP destino: %s", out_zip)
 
                 cur2 = conn.cursor()
+                # Fetch all image paths for the current study.
                 cur2.execute(QUERY_IMAGE_PATHS_BY_STUDY_PK, (study_pk,))
                 rows_img = cur2.fetchall()
 
@@ -179,6 +197,7 @@ def run_once(config: BackupConfig = DEFAULT_CONFIG, logger: Optional[logging.Log
                     zpathnumber = r["ZPATHNUMBER"]
                     zstored_in = r["ZSTOREDINDATABASEFOLDER"]
 
+                    # Resolve possible locations following Horos conventions.
                     p = resolve_image_path(zpathstring, zpathnumber, zstored_in, config)
                     exists = p.is_file()
                     if exists:
@@ -213,6 +232,7 @@ def run_once(config: BackupConfig = DEFAULT_CONFIG, logger: Optional[logging.Log
                 log.debug("ZIMAGE rows para study_pk=%s: %d; encontrados=%d", study_pk, len(rows_img), len(files))
 
                 if not files:
+                    # Record missing data instead of failing the entire batch.
                     log.warning("Estudo %s: nenhum arquivo encontrado. Marcando como NO_FILES.", study_uid)
                     issues_log(
                         config,
@@ -226,6 +246,7 @@ def run_once(config: BackupConfig = DEFAULT_CONFIG, logger: Optional[logging.Log
 
                 ok = False
                 attempts = 0
+                # Retry ZIP creation up to 3 times to dodge transient I/O issues.
                 while attempts < 3 and not ok:
                     attempts += 1
                     try:
@@ -237,6 +258,7 @@ def run_once(config: BackupConfig = DEFAULT_CONFIG, logger: Optional[logging.Log
                             except Exception:
                                 zip_size = -1
                             log.info("OK: %s (arquivos=%d, tamanho=%d bytes)", out_zip.name, len(files), zip_size)
+                            # Persist export metadata so future runs skip this study.
                             mark_exported(state_conn, study_uid, out_zip)
                             zips_by_month[month_dir] = zips_by_month.get(month_dir, 0) + 1
                             ok = True
@@ -270,6 +292,7 @@ def run_once(config: BackupConfig = DEFAULT_CONFIG, logger: Optional[logging.Log
 
             for month_dir, cnt in zips_by_month.items():
                 if cnt > 0:
+                    # Mark months that received any ZIPs as complete for resilience.
                     mark_month_done(month_dir, logger=log)
         finally:
             try:

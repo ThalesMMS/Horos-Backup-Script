@@ -1,3 +1,11 @@
+#
+# issues.py
+# Horos Backup Script
+#
+# Appends structured rows to the issues CSV to record problems encountered during backup runs.
+#
+# Thales Matheus Mendonça Santos - November 2025
+#
 """Issues CSV logging."""
 from __future__ import annotations
 
@@ -15,6 +23,7 @@ def issues_log(
     Append an issue row to ``issues.csv``.
     """
     issues_csv = config.paths.issues_csv
+    # Ensure the file exists and has a header before appending.
     issues_csv.parent.mkdir(parents=True, exist_ok=True)
     new_file = not issues_csv.exists()
     with open(issues_csv, "a", newline="", encoding="utf-8") as f:

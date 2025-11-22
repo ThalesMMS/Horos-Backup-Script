@@ -1,3 +1,11 @@
+#
+# queries.py
+# Horos Backup Script
+#
+# Stores the SQL fragments used to fetch studies and their images from the Horos database, adapting to the configured ordering.
+#
+# Thales Matheus Mendonça Santos - November 2025
+#
 """SQL statements shared by the pipeline."""
 
 from .config import BackupConfig
@@ -21,6 +29,7 @@ def build_studies_query(config: BackupConfig) -> str:
 
     query_by_studydate = f"""
         WITH CandidateStudies AS (
+          -- Build a set of studies that have at least one CT/MR series.
           SELECT
             st.Z_PK                   AS studyPK,
             st.ZSTUDYINSTANCEUID      AS studyUID,
@@ -39,12 +48,14 @@ def build_studies_query(config: BackupConfig) -> str:
         FROM CandidateStudies cs
         LEFT JOIN state.Exported ex ON ex.studyInstanceUID = cs.studyUID
         WHERE ex.studyInstanceUID IS NULL
+        -- Order deterministically so repeated runs pick up the same studies.
         ORDER BY cs.studyDate ASC, cs.studyUID ASC
         LIMIT ?;
     """
 
     query_by_dateadded = f"""
         WITH CandidateStudies AS (
+          -- Alternative ordering: process newest imports first.
           SELECT
             st.Z_PK                      AS studyPK,
             st.ZSTUDYINSTANCEUID         AS studyUID,

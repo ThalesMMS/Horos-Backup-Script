@@ -1,3 +1,11 @@
+#
+# dates.py
+# Horos Backup Script
+#
+# Provides date parsing and formatting helpers to normalize Horos timestamps for directory naming and debug logs.
+#
+# Thales Matheus Mendonça Santos - November 2025
+#
 """Date-related helpers used across the backup pipeline."""
 from __future__ import annotations
 
@@ -30,6 +38,7 @@ def parse_timestamp_to_parts(ts) -> Tuple[Optional[str], Optional[str], Optional
         return (None, None, None)
 
     try:
+        # Horos stores CoreData timestamps as seconds since 2001-01-01.
         secs = float(s)
         dt = APPLE_EPOCH + timedelta(seconds=secs)
         return (f"{dt.year:04d}", f"{dt.month:02d}", f"{dt.day:02d}")
@@ -51,6 +60,7 @@ def parse_timestamp_to_parts(ts) -> Tuple[Optional[str], Optional[str], Optional
 
 
 def fmt_date_for_name(ts, fallback: str = "UNKNOWN") -> str:
+    # Use parsed components to create a YYYY-MM-DD string with graceful fallback.
     y, mo, d = parse_timestamp_to_parts(ts)
     if y and mo and d:
         return f"{y}-{mo}-{d}"
@@ -60,6 +70,7 @@ def fmt_date_for_name(ts, fallback: str = "UNKNOWN") -> str:
 
 
 def month_dir_for(ts, config: BackupConfig) -> Path:
+    # Map a study date to its month folder (or UNKNOWN when parsing fails).
     y, mo, _ = parse_timestamp_to_parts(ts)
     if y and mo:
         return config.paths.backup_root / f"{y}_{mo}"
@@ -67,6 +78,7 @@ def month_dir_for(ts, config: BackupConfig) -> Path:
 
 
 def debug_dump_date(label: str, raw, logger: Optional[logging.Logger] = None):
+    # Helpful during debugging to see how Horos raw timestamps get interpreted.
     log = logger or logging.getLogger("horos_backup")
     y, mo, d = parse_timestamp_to_parts(raw)
     log.debug("%s: raw=%r -> parsed=%s-%s-%s", label, raw, y, mo, d)

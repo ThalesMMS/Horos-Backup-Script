@@ -1,3 +1,11 @@
+#
+# conftest.py
+# Horos Backup Script
+#
+# Creates reusable pytest fixtures that set up a temporary backup configuration and filesystem layout for tests.
+#
+# Thales Matheus Mendonça Santos - November 2025
+#
 import pytest
 
 from horos_backup.config import BackupConfig, Paths, Settings
@@ -10,6 +18,7 @@ def temp_config(tmp_path):
     settings = Settings()
     config = BackupConfig(paths=paths, settings=settings)
 
+    # Create the minimal folder structure expected by the code under test.
     paths.pacs_root.mkdir(parents=True, exist_ok=True)
     paths.backup_root.mkdir(parents=True, exist_ok=True)
     paths.database_dir.mkdir(parents=True, exist_ok=True)

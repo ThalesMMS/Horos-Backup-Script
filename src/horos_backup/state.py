@@ -1,3 +1,11 @@
+#
+# state.py
+# Horos Backup Script
+#
+# Manages the lightweight SQLite state database that tracks which studies were exported and when.
+#
+# Thales Matheus Mendonça Santos - November 2025
+#
 """State database helpers."""
 from __future__ import annotations
 
@@ -7,6 +15,7 @@ from .config import BackupConfig
 
 
 def state_connect(config: BackupConfig):
+    # A tiny SQLite DB persisted alongside backups to track exported studies.
     conn = sqlite3.connect(str(config.paths.state_db))
     cur = conn.cursor()
     cur.execute(
@@ -23,6 +32,7 @@ def state_connect(config: BackupConfig):
 
 
 def mark_exported(state_conn, study_uid: str, zip_path):
+    # Idempotent insert so repeated runs simply overwrite with the latest path.
     cur = state_conn.cursor()
     cur.execute(
         "INSERT OR REPLACE INTO Exported (studyInstanceUID, when_exported, zip_path) VALUES (?, datetime('now'), ?);",

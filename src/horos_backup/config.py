@@ -1,3 +1,11 @@
+#
+# config.py
+# Horos Backup Script
+#
+# Defines dataclasses for filesystem paths and runtime settings so backups can be configured and reused consistently across runs and tests.
+#
+# Thales Matheus Mendonça Santos - November 2025
+#
 """Configuration objects for the Horos backup pipeline.
 
 The defaults mimic the previous monolithic script. A BackupConfig bundles
@@ -15,22 +23,27 @@ class Paths:
     backup_root: Optional[Path] = None
 
     def __post_init__(self):
+        # Normalize inputs to Path objects even when callers pass strings.
         self.pacs_root = Path(self.pacs_root)
         if self.backup_root is not None:
             self.backup_root = Path(self.backup_root)
+        # Default backup_root stays inside the PACS volume to avoid local SSD.
         self.backup_root = self.backup_root or (self.pacs_root / "Backup")
+        # Sentinel prevents running on the wrong drive.
         self.sentinel = self.pacs_root / ".pacs_sentinel"
         self.horos_data_dir = self.pacs_root / "Database" / "Horos Data"
         self.horos_db_orig = self.horos_data_dir / "Database.sql"
         self.incoming_dir = self.horos_data_dir / "INCOMING.noindex"
         self.database_dir = self.horos_data_dir / "DATABASE.noindex"
 
+        # Temporary workspace and state artifacts.
         self.tmp_root = self.backup_root / ".tmp"
         self.dbcopy_dir = self.tmp_root / "dbcopy"
         self.dbcopy_path = self.dbcopy_dir / "Database_copy.sql"
         self.state_db = self.backup_root / "export_state.sqlite"
         self.lockfile_path = self.tmp_root / ".run.lock"
 
+        # Logging and issues tracking.
         self.logs_dir = self.backup_root / "logs"
         self.log_file = self.logs_dir / "horos_backup.log"
         self.issues_csv = self.backup_root / "issues.csv"

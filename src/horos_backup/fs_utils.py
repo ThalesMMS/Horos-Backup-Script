@@ -1,3 +1,11 @@
+#
+# fs_utils.py
+# Horos Backup Script
+#
+# Contains filesystem helpers for directory setup, mount checks, path resolution, and housekeeping around month folders in the backup tree.
+#
+# Thales Matheus Mendonça Santos - November 2025
+#
 """Filesystem helpers for the Horos backup pipeline."""
 from __future__ import annotations
 
@@ -12,6 +20,7 @@ from .config import BackupConfig
 
 def ensure_dirs(config: BackupConfig):
     paths = config.paths
+    # Ensure all directories exist before the run touches files.
     paths.backup_root.mkdir(parents=True, exist_ok=True)
     paths.tmp_root.mkdir(parents=True, exist_ok=True)
     paths.dbcopy_dir.mkdir(parents=True, exist_ok=True)
@@ -19,6 +28,7 @@ def ensure_dirs(config: BackupConfig):
 
 def ensure_volume_mounted(config: BackupConfig):
     paths = config.paths
+    # Guard against running on the wrong disk by checking the sentinel.
     if not paths.pacs_root.exists() or not paths.sentinel.exists():
         raise RuntimeError(
             f"Volume externo não montado OU sentinela ausente: {paths.pacs_root}\n"
@@ -39,6 +49,7 @@ def count_files_early(root: Path, stop_after: int) -> int:
             with os.scandir(d) as it:
                 for entry in it:
                     try:
+                        # Bail out quickly once we cross the threshold.
                         if entry.is_file(follow_symlinks=False):
                             count += 1
                             if count > stop_after:
@@ -72,6 +83,7 @@ def resolve_image_path(zpathstring, zpathnumber, zstored_in_dbfolder, config: Ba
 
     candidates = []
     if in_db:
+        # Typical case: files live under DATABASE.noindex and may be nested.
         if sub:
             candidates.append(paths.database_dir / sub / s)
         candidates.append(paths.database_dir / s)
@@ -83,6 +95,7 @@ def resolve_image_path(zpathstring, zpathnumber, zstored_in_dbfolder, config: Ba
         if p.is_absolute():
             candidates.append(p)
         else:
+            # Relative paths outside DATABASE.noindex are rooted at Horos Data.
             candidates.append(paths.horos_data_dir / s)
 
     for c in candidates:
@@ -97,6 +110,7 @@ def resolve_image_path(zpathstring, zpathnumber, zstored_in_dbfolder, config: Ba
 def dump_fs_layout(config: BackupConfig, logger: Optional[logging.Logger] = None):
     log = logger or logging.getLogger("horos_backup")
     try:
+        # Helpful debug to understand what the PACS volume looks like in situ.
         log.debug("FS layout check:")
         log.debug("  HOROS_DATA_DIR exists=%s path=%s", config.paths.horos_data_dir.exists(), config.paths.horos_data_dir)
         log.debug("  DATABASE_DIR   exists=%s path=%s", config.paths.database_dir.exists(), config.paths.database_dir)
@@ -117,6 +131,7 @@ def dump_fs_layout(config: BackupConfig, logger: Optional[logging.Logger] = None
 
 
 def latest_incomplete_month_folder(config: BackupConfig) -> Optional[Path]:
+    # Find the newest month folder that lacks the completion marker.
     months = [p for p in config.paths.backup_root.glob("[0-9][0-9][0-9][0-9]_[0-1][0-9]") if p.is_dir()]
     if not months:
         return None
@@ -137,6 +152,7 @@ def reset_incomplete_latest_month(config: BackupConfig, logger: Optional[logging
 def mark_month_done(month_dir: Path, logger: Optional[logging.Logger] = None):
     log = logger or logging.getLogger("horos_backup")
     try:
+        # Marker file lets future runs skip deletion of already completed months.
         month_dir.mkdir(parents=True, exist_ok=True)
         (month_dir / ".month_done").touch()
     except Exception as e:
