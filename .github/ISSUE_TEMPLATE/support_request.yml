@@ -1,0 +1,42 @@
+name: Support request
+description: Ask for setup or operational help.
+title: "support: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For general help, include enough context to reproduce the setup but do not share patient-identifying data.
+  - type: input
+    id: goal
+    attributes:
+      label: What are you trying to do?
+      placeholder: Set up the LaunchAgent / change modalities / troubleshoot skipped runs ...
+    validations:
+      required: true
+  - type: textarea
+    id: setup
+    attributes:
+      label: Current setup
+      placeholder: |
+        macOS version:
+        Horos version:
+        Storage layout:
+        Relevant config changes:
+    validations:
+      required: true
+  - type: textarea
+    id: question
+    attributes:
+      label: Question or blocker
+      placeholder: Describe where you are stuck.
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Safety checks
+      options:
+        - label: I read README.md and SUPPORT.md first.
+          required: true
+        - label: I removed patient-identifying data from paths, logs, and screenshots.
+          required: true

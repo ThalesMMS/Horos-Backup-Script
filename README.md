@@ -147,6 +147,13 @@ pytest
 - **`ZIP_FAIL` entries** — the ZIP remained invalid after three attempts; inspect disk I/O and permissions.  
 - **Switching to `date_added` order** — update `ORDER_BY` as noted above.
 
+## Support
+
+For usage questions, operational troubleshooting, and a short FAQ, see [SUPPORT.md](SUPPORT.md).
+
+- Please **do not include patient-identifying data** in issues, pull requests, screenshots, or logs.
+- For suspected security issues, follow [SECURITY.md](SECURITY.md) instead of opening a detailed public issue.
+
 ## Privacy and safety reminders
 
 Exported ZIP filenames contain patient names and dates. Make sure data sharing complies with your organisation’s privacy policies. Encryption at rest is not part of this automation; enable APFS encryption if required.

@@ -1,0 +1,55 @@
+name: Bug report
+description: Report a reproducible problem in the backup workflow.
+title: "bug: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a problem.
+
+        Please do **not** include patient-identifying data, real study UIDs, or unredacted logs.
+  - type: input
+    id: summary
+    attributes:
+      label: Summary
+      description: What went wrong?
+      placeholder: A short description of the problem
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Share only non-sensitive environment details.
+      placeholder: |
+        macOS version:
+        Horos version:
+        Python version:
+        LaunchAgent in use: yes/no
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Run ...
+        2. Observe ...
+        3. Expected ...
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Sanitized logs or error output
+      description: Remove names, dates of birth, accession numbers, UIDs, and any other PHI.
+      render: shell
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Safety checks
+      options:
+        - label: I removed patient-identifying data from this report.
+          required: true
+        - label: I searched for existing issues before opening this one.
+          required: true
