@@ -39,11 +39,11 @@ def verify_zip(out_zip: Path, logger: Optional[logging.Logger] = None) -> bool:
         with zipfile.ZipFile(out_zip, "r") as zf:
             bad = zf.testzip()
             if bad is not None:
-                log.error("testzip() encontrou erro em %s: entrada problemática: %s", out_zip, bad)
+                log.error("testzip() found an error in %s: problematic entry: %s", out_zip, bad)
                 return False
             return True
     except Exception as e:
-        log.error("Falha ao abrir/testar ZIP %s: %s", out_zip, e)
+        log.error("Failed to open/test ZIP %s: %s", out_zip, e)
         return False
 
 

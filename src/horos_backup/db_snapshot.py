@@ -20,7 +20,7 @@ from .config import BackupConfig
 def copy_horos_db_consistent(config: BackupConfig) -> str:
     paths = config.paths
     if not paths.horos_db_orig.exists():
-        raise FileNotFoundError(f"DB do Horos não encontrado: {paths.horos_db_orig}")
+        raise FileNotFoundError(f"Horos DB not found: {paths.horos_db_orig}")
 
     # Remove stale copy to avoid reading outdated data.
     if paths.dbcopy_path.exists():
@@ -57,9 +57,9 @@ def choose_db_path(config: BackupConfig, logger: Optional[logging.Logger] = None
         dbp = copy_horos_db_consistent(config)
         try:
             st = os.stat(dbp)
-            log.info("Snapshot criado: %s (size=%d mtime=%d)", dbp, st.st_size, int(st.st_mtime))
+            log.info("Snapshot created: %s (size=%d mtime=%d)", dbp, st.st_size, int(st.st_mtime))
         except Exception:
-            log.info("Snapshot criado: %s", dbp)
+            log.info("Snapshot created: %s", dbp)
         return dbp
 
     # Reuse previous snapshot to save time when allowed.
@@ -67,19 +67,19 @@ def choose_db_path(config: BackupConfig, logger: Optional[logging.Logger] = None
         try:
             st = os.stat(config.paths.dbcopy_path)
             log.info(
-                "Reutilizando snapshot existente: %s (size=%d mtime=%d)", config.paths.dbcopy_path, st.st_size, int(st.st_mtime)
+                "Reusing existing snapshot: %s (size=%d mtime=%d)", config.paths.dbcopy_path, st.st_size, int(st.st_mtime)
             )
         except Exception:
-            log.info("Reutilizando snapshot existente: %s", config.paths.dbcopy_path)
+            log.info("Reusing existing snapshot: %s", config.paths.dbcopy_path)
         return str(config.paths.dbcopy_path)
 
-    log.warning("Snapshot ausente em %s; criando uma cópia agora (one-shot).", config.paths.dbcopy_path)
+    log.warning("Snapshot missing at %s; creating a copy now (one-shot).", config.paths.dbcopy_path)
     dbp = copy_horos_db_consistent(config)
     try:
         st = os.stat(dbp)
-        log.info("Snapshot criado: %s (size=%d mtime=%d)", dbp, st.st_size, int(st.st_mtime))
+        log.info("Snapshot created: %s (size=%d mtime=%d)", dbp, st.st_size, int(st.st_mtime))
     except Exception:
-        log.info("Snapshot criado: %s", dbp)
+        log.info("Snapshot created: %s", dbp)
     return dbp
 
 

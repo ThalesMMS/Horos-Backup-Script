@@ -31,8 +31,8 @@ def ensure_volume_mounted(config: BackupConfig):
     # Guard against running on the wrong disk by checking the sentinel.
     if not paths.pacs_root.exists() or not paths.sentinel.exists():
         raise RuntimeError(
-            f"Volume externo não montado OU sentinela ausente: {paths.pacs_root}\n"
-            f"Crie o arquivo sentinela: {paths.sentinel}"
+            f"External volume not mounted OR sentinel missing: {paths.pacs_root}\n"
+            f"Create the sentinel file: {paths.sentinel}"
         )
 
 
@@ -127,7 +127,7 @@ def dump_fs_layout(config: BackupConfig, logger: Optional[logging.Logger] = None
                 ", ".join(subdirs) if subdirs else "(none)",
             )
     except Exception:
-        log.exception("dump_fs_layout falhou")
+        log.exception("dump_fs_layout failed")
 
 
 def latest_incomplete_month_folder(config: BackupConfig) -> Optional[Path]:
@@ -145,7 +145,7 @@ def reset_incomplete_latest_month(config: BackupConfig, logger: Optional[logging
     log = logger or logging.getLogger("horos_backup")
     mf = latest_incomplete_month_folder(config)
     if mf and mf.exists():
-        log.warning("Removendo mês incompleto: %s", mf)
+        log.warning("Removing incomplete month folder: %s", mf)
         shutil.rmtree(mf, ignore_errors=True)
 
 
@@ -156,7 +156,7 @@ def mark_month_done(month_dir: Path, logger: Optional[logging.Logger] = None):
         month_dir.mkdir(parents=True, exist_ok=True)
         (month_dir / ".month_done").touch()
     except Exception as e:
-        log.warning("Falha ao marcar .month_done em %s: %s", month_dir, e)
+        log.warning("Failed to mark .month_done in %s: %s", month_dir, e)
 
 
 __all__ = [
