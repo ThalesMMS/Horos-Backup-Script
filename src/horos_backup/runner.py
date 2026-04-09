@@ -38,6 +38,15 @@ from .zip_utils import verify_zip, zip_study_atomic
 
 
 def run_once(config: BackupConfig = DEFAULT_CONFIG, logger: Optional[logging.Logger] = None):
+    """
+    Perform a single backup/export cycle for Horos according to the provided configuration.
+    
+    This function coordinates one run of the export pipeline: it ensures required directories and external volume are available, acquires a filesystem lock to avoid concurrent runs, aborts early if incoming-import pressure is above the configured threshold, prepares a consistent read-only SQLite snapshot, selects candidate studies, exports each study into a verified ZIP (with up to three retries), records export state and issues for failures, marks completed months, and always releases the acquired lock.
+    
+    Parameters:
+        config (BackupConfig): Configuration that supplies paths, selection criteria, thresholds, and pacing used during the run.
+        logger (Optional[logging.Logger]): Logger to use for run messages; when omitted, a logger is created from the configuration.
+    """
     log = logger or setup_logging(config)
     # Ensure the required folder structure and external drive are present.
     ensure_dirs(config)

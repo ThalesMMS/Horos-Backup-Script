@@ -27,6 +27,15 @@ def ensure_dirs(config: BackupConfig):
 
 
 def ensure_volume_mounted(config: BackupConfig):
+    """
+    Verify the external PACS volume is mounted by ensuring the configured PACS root and sentinel file both exist.
+    
+    Parameters:
+        config (BackupConfig): Backup configuration whose `paths` must provide `pacs_root` (volume root) and `sentinel` (marker file path).
+    
+    Raises:
+        RuntimeError: If either the PACS root does not exist or the sentinel file is missing.
+    """
     paths = config.paths
     # Guard against running on the wrong disk by checking the sentinel.
     if not paths.pacs_root.exists() or not paths.sentinel.exists():
@@ -108,6 +117,15 @@ def resolve_image_path(zpathstring, zpathnumber, zstored_in_dbfolder, config: Ba
 
 
 def dump_fs_layout(config: BackupConfig, logger: Optional[logging.Logger] = None):
+    """
+    Log key filesystem paths and a sample of numeric subdirectories under the configured database directory for debugging.
+    
+    Parameters:
+        config (BackupConfig): Configuration object providing filesystem paths; this function inspects `config.paths.horos_data_dir` and `config.paths.database_dir`.
+    
+    Notes:
+        Any exceptions raised while inspecting the filesystem are caught and logged.
+    """
     log = logger or logging.getLogger("horos_backup")
     try:
         # Helpful debug to understand what the PACS volume looks like in situ.
@@ -132,6 +150,14 @@ def dump_fs_layout(config: BackupConfig, logger: Optional[logging.Logger] = None
 
 def latest_incomplete_month_folder(config: BackupConfig) -> Optional[Path]:
     # Find the newest month folder that lacks the completion marker.
+    """
+    Return the newest month-format directory under config.paths.backup_root that does not contain a .month_done marker.
+    
+    Searches for directories named YYYY_MM, selects the most recent, and returns it only if the directory lacks a .month_done file.
+    
+    Returns:
+        Path or None: The latest incomplete month directory, or `None` if no matching directory exists or the latest is already marked complete.
+    """
     months = [p for p in config.paths.backup_root.glob("[0-9][0-9][0-9][0-9]_[0-1][0-9]") if p.is_dir()]
     if not months:
         return None
@@ -142,6 +168,15 @@ def latest_incomplete_month_folder(config: BackupConfig) -> Optional[Path]:
 
 
 def reset_incomplete_latest_month(config: BackupConfig, logger: Optional[logging.Logger] = None):
+    """
+    Remove the latest incomplete monthly backup folder, if one exists.
+    
+    Finds the most recent directory named YYYY_MM under the backup root that does not contain a .month_done marker and deletes it.
+    
+    Parameters:
+        config (BackupConfig): Backup configuration providing paths (used to locate month folders).
+        logger (Optional[logging.Logger]): Logger to emit warnings; if omitted, the module logger "horos_backup" is used.
+    """
     log = logger or logging.getLogger("horos_backup")
     mf = latest_incomplete_month_folder(config)
     if mf and mf.exists():
@@ -150,6 +185,11 @@ def reset_incomplete_latest_month(config: BackupConfig, logger: Optional[logging
 
 
 def mark_month_done(month_dir: Path, logger: Optional[logging.Logger] = None):
+    """
+    Create a completion marker for a month folder so future runs treat it as finished.
+    
+    Creates the month directory if missing and writes an empty file named ".month_done" inside it. If an error occurs the function logs a warning but does not raise.
+    """
     log = logger or logging.getLogger("horos_backup")
     try:
         # Marker file lets future runs skip deletion of already completed months.

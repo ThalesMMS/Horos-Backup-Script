@@ -33,6 +33,15 @@ def zip_study_atomic(input_files: Iterable[Path], out_zip: Path):
 
 
 def verify_zip(out_zip: Path, logger: Optional[logging.Logger] = None) -> bool:
+    """
+    Checks a ZIP archive for integrity by running zipfile.testzip().
+    
+    Parameters:
+        out_zip (Path): Path to the ZIP file to verify.
+    
+    Returns:
+        bool: `True` if no corrupt entries are detected, `False` if a corrupt entry is found or the archive cannot be opened/tested.
+    """
     log = logger or logging.getLogger("horos_backup")
     try:
         # testzip() returns the first corrupt filename, or None if OK.
