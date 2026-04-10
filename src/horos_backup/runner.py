@@ -182,7 +182,7 @@ def run_once(config: BackupConfig = DEFAULT_CONFIG, logger: Optional[logging.Log
                 log.debug("month_dir=%s", month_dir)
 
                 out_zip = build_zip_path(month_dir, patient_nm, dob_ts, study_ts, study_uid, config)
-                log.debug("Destination ZIP: %s", out_zip)
+                log.debug("Destination ZIP prepared for study %s", study_uid)
 
                 cur2 = conn.cursor()
                 # Fetch all image paths for the current study.
@@ -248,14 +248,14 @@ def run_once(config: BackupConfig = DEFAULT_CONFIG, logger: Optional[logging.Log
                 while attempts < 3 and not ok:
                     attempts += 1
                     try:
-                        log.info("Exporting %s -> %s (attempt %d)", study_uid, out_zip, attempts)
+                        log.info("Exporting study %s (attempt %d)", study_uid, attempts)
                         zip_study_atomic(files, out_zip)
                         if verify_zip(out_zip, logger=log):
                             try:
                                 zip_size = os.stat(out_zip).st_size
                             except Exception:
                                 zip_size = -1
-                            log.info("OK: %s (files=%d, size=%d bytes)", out_zip.name, len(files), zip_size)
+                            log.info("OK: study %s (files=%d, size=%d bytes)", study_uid, len(files), zip_size)
                             # Persist export metadata so future runs skip this study.
                             mark_exported(state_conn, study_uid, out_zip)
                             zips_by_month[month_dir] = zips_by_month.get(month_dir, 0) + 1

@@ -70,21 +70,23 @@ def test_verify_zip_logs_english_message_for_corrupt_entry(tmp_path, caplog):
     out_zip = tmp_path / "corrupt_entry.zip"
     zip_study_atomic([f], out_zip)
 
-    # Corrupt the compressed data bytes in the middle of the file so testzip()
-    # detects a bad CRC but the file is still recognisable as a ZIP.
+    # Corrupt the central-directory CRC so testzip() detects a bad CRC but the
+    # file is still recognisable as a ZIP.
     raw = bytearray(out_zip.read_bytes())
-    # Flip bytes roughly in the middle to corrupt the compressed data.
-    mid = len(raw) // 2
-    for i in range(mid, min(mid + 32, len(raw))):
-        raw[i] ^= 0xFF
+    central_offset = raw.index(b"PK\x01\x02")
+    central_header = struct.unpack_from("<4s6H3I5H2I", raw, central_offset)
+    name_len = central_header[10]
+    name_start = central_offset + 46
+    assert raw[name_start : name_start + name_len] == b"data.bin"
+    raw[central_offset + 16] ^= 0xFF
     out_zip.write_bytes(bytes(raw))
 
     with caplog.at_level(logging.ERROR, logger="horos_backup"):
         result = verify_zip(out_zip)
 
-    # Either the corruption caused a bad entry (False + message) or the ZIP
-    # became unreadable (also False + message).  Either way the result is False.
     assert result is False
+    expected = f"testzip() found an error in {out_zip}: problematic entry: data.bin"
+    assert any(record.getMessage() == expected for record in caplog.records)
 
 
 # ---------------------------------------------------------------------------
