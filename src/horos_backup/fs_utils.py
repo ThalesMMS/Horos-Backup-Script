@@ -149,7 +149,6 @@ def dump_fs_layout(config: BackupConfig, logger: Optional[logging.Logger] = None
 
 
 def latest_incomplete_month_folder(config: BackupConfig) -> Optional[Path]:
-    # Find the newest month folder that lacks the completion marker.
     """
     Return the newest month-format directory under config.paths.backup_root that does not contain a .month_done marker.
     

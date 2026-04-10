@@ -120,7 +120,7 @@ def run_once(config: BackupConfig = DEFAULT_CONFIG, logger: Optional[logging.Log
                 pending = max(0, total_candidates - exported_in_candidates)
 
                 log.info(
-                    "Snapshot (series-level): CT(studies)=%d; MR(studies)=%d; CT∪MR(unique studies)=%d",
+                    "Snapshot (series-level): CT(studies)=%d; MR(studies)=%d; CT U MR(unique studies)=%d",
                     series_ct,
                     series_mr,
                     total_candidates,
