@@ -46,17 +46,17 @@ def run_once(config: BackupConfig = DEFAULT_CONFIG, logger: Optional[logging.Log
     # Prevent overlapping runs by acquiring a lock; skip if already running.
     lock_fh = acquire_lock(config.paths.lockfile_path)
     if lock_fh is None:
-        log.info("Execução anterior ainda em curso; esta rodada será pulada.")
+        log.info("A previous run is still in progress; this cycle will be skipped.")
         return
 
     try:
         # Avoid hammering Horos during heavy imports by bailing out early.
         incoming_count = count_files_early(config.paths.incoming_dir, config.settings.incoming_max_files)
         log.info(
-            "INCOMING.noindex: ~%d arquivos (limiar %d)", incoming_count, config.settings.incoming_max_files
+            "INCOMING.noindex: ~%d files (threshold %d)", incoming_count, config.settings.incoming_max_files
         )
         if incoming_count > config.settings.incoming_max_files:
-            log.warning("INCOMING.noindex acima do limiar; pulando exportação desta rodada.")
+            log.warning("INCOMING.noindex is above the threshold; skipping this export cycle.")
             issues_log(config, "INCOMING_OVER_LIMIT", "-", f"count={incoming_count}", {"limit": config.settings.incoming_max_files})
             return
 
@@ -68,7 +68,7 @@ def run_once(config: BackupConfig = DEFAULT_CONFIG, logger: Optional[logging.Log
             # Create or reuse a consistent SQLite snapshot for read-only querying.
             db_path = choose_db_path(config, logger=log)
         except Exception:
-            log.exception("Falha ao preparar snapshot do DB.")
+            log.exception("Failed to prepare DB snapshot.")
             raise
 
         try:
@@ -80,9 +80,9 @@ def run_once(config: BackupConfig = DEFAULT_CONFIG, logger: Optional[logging.Log
             except Exception:
                 pass
             cur = conn.cursor()
-            log.debug("Conexão SQLite ok. sqlite_version=%s", sqlite3.sqlite_version)
+            log.debug("SQLite connection OK. sqlite_version=%s", sqlite3.sqlite_version)
         except Exception:
-            log.exception("Erro ao abrir snapshot SQLite em modo leitura.")
+            log.exception("Failed to open SQLite snapshot in read-only mode.")
             raise
 
         state_conn = None
@@ -120,26 +120,26 @@ def run_once(config: BackupConfig = DEFAULT_CONFIG, logger: Optional[logging.Log
                 pending = max(0, total_candidates - exported_in_candidates)
 
                 log.info(
-                    "Snapshot (series-level): CT(estudos)=%d; MR(estudos)=%d; CT∪MR(estudos únicos)=%d",
+                    "Snapshot (series-level): CT(studies)=%d; MR(studies)=%d; CT U MR(unique studies)=%d",
                     series_ct,
                     series_mr,
                     total_candidates,
                 )
                 log.info(
-                    "Snapshot: candidatos(CT/MR)=%d; já exportados(dentro dos candidatos)=%d; pendentes ~%d",
+                    "Snapshot: candidates(CT/MR)=%d; already exported(within candidates)=%d; pending ~%d",
                     total_candidates,
                     exported_in_candidates,
                     pending,
                 )
             except Exception:
-                log.exception("Falha ao calcular snapshot de candidatos/exportados")
+                log.exception("Failed to calculate candidate/exported snapshot")
 
             studies_query = build_studies_query(config)
             cur.execute(studies_query, (*config.settings.mods, config.settings.batch_size))
             studies = cur.fetchall()
 
             log.info(
-                "Estudos selecionados para o lote: %d (ORDER_BY=%s, MODS=%s, BATCH_SIZE=%d)",
+                "Studies selected for the batch: %d (ORDER_BY=%s, MODS=%s, BATCH_SIZE=%d)",
                 len(studies),
                 config.settings.order_by,
                 config.settings.mods,
@@ -161,7 +161,7 @@ def run_once(config: BackupConfig = DEFAULT_CONFIG, logger: Optional[logging.Log
                 )
 
             if not studies:
-                log.info("Nada a exportar neste ciclo.")
+                log.info("Nothing to export in this cycle.")
                 return
 
             zips_by_month: Dict[Path, int] = {}
@@ -182,7 +182,7 @@ def run_once(config: BackupConfig = DEFAULT_CONFIG, logger: Optional[logging.Log
                 log.debug("month_dir=%s", month_dir)
 
                 out_zip = build_zip_path(month_dir, patient_nm, dob_ts, study_ts, study_uid, config)
-                log.debug("ZIP destino: %s", out_zip)
+                log.debug("Destination ZIP prepared for study %s", study_uid)
 
                 cur2 = conn.cursor()
                 # Fetch all image paths for the current study.
@@ -203,11 +203,6 @@ def run_once(config: BackupConfig = DEFAULT_CONFIG, logger: Optional[logging.Log
                     if exists:
                         files.append(p)
 
-                    try:
-                        in_db_flag = int(zstored_in) == 1
-                    except Exception:
-                        in_db_flag = False
-
                     if len(debug_checked) < 5:
                         log.debug(
                             "IMG CAND: ZPATHSTRING=%r ZPATHNUMBER=%r ZINDB=%r -> resolved=%s exists=%s",
@@ -217,7 +212,10 @@ def run_once(config: BackupConfig = DEFAULT_CONFIG, logger: Optional[logging.Log
                             p,
                             exists,
                         )
-                    if len(debug_checked) < 5:
+                        try:
+                            in_db_flag = int(zstored_in) == 1
+                        except Exception:
+                            in_db_flag = False
                         if in_db_flag:
                             s_local = str(zpathstring or "").lstrip("/")
                             sub_local = (str(zpathnumber).strip() if zpathnumber is not None else "")
@@ -229,19 +227,19 @@ def run_once(config: BackupConfig = DEFAULT_CONFIG, logger: Optional[logging.Log
                         else:
                             debug_checked.append((str(p), exists))
 
-                log.debug("ZIMAGE rows para study_pk=%s: %d; encontrados=%d", study_pk, len(rows_img), len(files))
+                log.debug("ZIMAGE rows for study_pk=%s: %d; found=%d", study_pk, len(rows_img), len(files))
 
                 if not files:
                     # Record missing data instead of failing the entire batch.
-                    log.warning("Estudo %s: nenhum arquivo encontrado. Marcando como NO_FILES.", study_uid)
+                    log.warning("Study %s: no files found. Marking as NO_FILES.", study_uid)
                     issues_log(
                         config,
                         "NO_FILES",
                         study_uid,
-                        "Nenhum arquivo válido encontrado",
+                        "No valid files found",
                         {"study_pk": int(study_pk), "checked": debug_checked},
                     )
-                    log.debug("Caminhos tentados (amostra): %s", debug_checked)
+                    log.debug("Paths checked (sample): %s", debug_checked)
                     continue
 
                 ok = False
@@ -250,27 +248,23 @@ def run_once(config: BackupConfig = DEFAULT_CONFIG, logger: Optional[logging.Log
                 while attempts < 3 and not ok:
                     attempts += 1
                     try:
-                        log.info("Exportando %s -> %s (tentativa %d)", study_uid, out_zip, attempts)
+                        log.info("Exporting study %s (attempt %d)", study_uid, attempts)
                         zip_study_atomic(files, out_zip)
                         if verify_zip(out_zip, logger=log):
                             try:
                                 zip_size = os.stat(out_zip).st_size
                             except Exception:
                                 zip_size = -1
-                            log.info("OK: %s (arquivos=%d, tamanho=%d bytes)", out_zip.name, len(files), zip_size)
+                            log.info("OK: study %s (files=%d, size=%d bytes)", study_uid, len(files), zip_size)
                             # Persist export metadata so future runs skip this study.
                             mark_exported(state_conn, study_uid, out_zip)
                             zips_by_month[month_dir] = zips_by_month.get(month_dir, 0) + 1
                             ok = True
                         else:
-                            try:
-                                out_zip.unlink(missing_ok=True)
-                            except TypeError:
-                                if out_zip.exists():
-                                    out_zip.unlink()
+                            out_zip.unlink(missing_ok=True)
                             time.sleep(1)
                     except Exception:
-                        log.exception("Falha ao exportar %s", study_uid)
+                        log.exception("Failed to export %s", study_uid)
                         try:
                             if out_zip.exists():
                                 out_zip.unlink()
@@ -279,12 +273,12 @@ def run_once(config: BackupConfig = DEFAULT_CONFIG, logger: Optional[logging.Log
                         time.sleep(1)
 
                 if not ok:
-                    log.error("Estudo %s: falha após %d tentativas. Registrando em issues.csv.", study_uid, attempts)
+                    log.error("Study %s: failed after %d attempts. Recording in issues.csv.", study_uid, attempts)
                     issues_log(
                         config,
                         "ZIP_FAIL",
                         study_uid,
-                        f"Falha após {attempts} tentativas",
+                        f"Failed after {attempts} attempts",
                         {"zip_path": str(out_zip), "files": len(files)},
                     )
 

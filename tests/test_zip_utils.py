@@ -6,7 +6,11 @@
 #
 # Thales Matheus Mendonça Santos - November 2025
 #
+import logging
+import struct
 import zipfile
+
+import pytest
 
 from horos_backup.zip_utils import verify_zip, zip_study_atomic
 
@@ -32,3 +36,83 @@ def test_verify_zip_failure(tmp_path):
     bad.write_text("not a zip")
     # Corrupt archives should return False and not raise.
     assert verify_zip(bad) is False
+
+
+# ---------------------------------------------------------------------------
+# verify_zip – English log messages (added in chore/translate-pt-docs-to-english)
+# ---------------------------------------------------------------------------
+
+def test_verify_zip_logs_english_message_for_non_zip_file(tmp_path, caplog):
+    bad = tmp_path / "bad.zip"
+    bad.write_text("not a zip")
+
+    with caplog.at_level(logging.ERROR, logger="horos_backup"):
+        result = verify_zip(bad)
+
+    assert result is False
+    assert "Failed to open/test ZIP" in caplog.text
+
+
+def test_verify_zip_returns_false_for_nonexistent_file(tmp_path, caplog):
+    missing = tmp_path / "nonexistent.zip"
+
+    with caplog.at_level(logging.ERROR, logger="horos_backup"):
+        result = verify_zip(missing)
+
+    assert result is False
+    assert "Failed to open/test ZIP" in caplog.text
+
+
+def test_verify_zip_logs_english_message_for_corrupt_entry(tmp_path, caplog):
+    # Build a valid ZIP first.
+    f = tmp_path / "data.bin"
+    f.write_bytes(b"\x00" * 1024)
+    out_zip = tmp_path / "corrupt_entry.zip"
+    zip_study_atomic([f], out_zip)
+
+    # Corrupt the central-directory CRC so testzip() detects a bad CRC but the
+    # file is still recognisable as a ZIP.
+    raw = bytearray(out_zip.read_bytes())
+    central_offset = raw.index(b"PK\x01\x02")
+    central_header = struct.unpack_from("<4s6H3I5H2I", raw, central_offset)
+    name_len = central_header[10]
+    name_start = central_offset + 46
+    assert raw[name_start : name_start + name_len] == b"data.bin"
+    raw[central_offset + 16] ^= 0xFF
+    out_zip.write_bytes(bytes(raw))
+
+    with caplog.at_level(logging.ERROR, logger="horos_backup"):
+        result = verify_zip(out_zip)
+
+    assert result is False
+    expected = f"testzip() found an error in {out_zip}: problematic entry: data.bin"
+    assert any(record.getMessage() == expected for record in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# zip_study_atomic – boundary / regression cases
+# ---------------------------------------------------------------------------
+
+def test_zip_study_atomic_with_empty_file_list(tmp_path):
+    out_zip = tmp_path / "empty.zip"
+    # An empty iterable should produce an empty but valid ZIP.
+    zip_study_atomic([], out_zip)
+
+    assert out_zip.exists()
+    with zipfile.ZipFile(out_zip) as zf:
+        assert zf.namelist() == []
+    assert verify_zip(out_zip)
+
+
+def test_zip_study_atomic_skips_nonexistent_files(tmp_path):
+    real_file = tmp_path / "real.txt"
+    real_file.write_text("content")
+    ghost = tmp_path / "ghost.txt"  # intentionally not created
+
+    out_zip = tmp_path / "partial.zip"
+    zip_study_atomic([real_file, ghost], out_zip)
+
+    with zipfile.ZipFile(out_zip) as zf:
+        assert "real.txt" in zf.namelist()
+        assert "ghost.txt" not in zf.namelist()
+    assert verify_zip(out_zip)

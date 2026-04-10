@@ -12,14 +12,14 @@
     <string>/Volumes/PACS/Backup/horos_backup_export.py</string>
   </array>
 
-  <!-- Executa a cada 10 minutos -->
+  <!-- Runs every 10 minutes -->
   <key>StartInterval</key>
   <integer>600</integer>
 
   <key>RunAtLoad</key>
   <true/>
 
-  <!-- Logs do launchd (secundários). O script já grava logs rotacionados em /Volumes/PACS/Backup/logs -->
+  <!-- Secondary launchd logs. The script already writes rotated logs to /Volumes/PACS/Backup/logs -->
   <key>StandardOutPath</key>
   <string>/tmp/horos_backup_export.out</string>
   <key>StandardErrorPath</key>

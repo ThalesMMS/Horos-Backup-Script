@@ -2,7 +2,7 @@
 
 The project automates bulk backup of CT and MR DICOM studies from the Horos database on macOS. It produces a ZIP per study, grouped into monthly folders, and it can resume safely after crashes or power failures. The automation was built for large archives (2+ TB, 50k–130k studies) running on older Macs where manual exports are impractical.
 
-> Looking for the original Portuguese documentation? See `docs/README.pt.md`.
+> Looking for the detailed setup and operations guide? See `docs/README.pt.md` (legacy filename preserved).
 
 ## Repository layout
 
